@@ -1,0 +1,43 @@
+name: CI
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      # 1. Setup Python
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.8
+
+      # 2. Install Buildozer dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git python3-pip libffi-dev libssl-dev \
+            libtool autoconf automake \
+            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
+            zlib1g-dev
+
+      # 3. Install Buildozer
+      - name: Install Buildozer
+        run: pip install buildozer cython==0.29.33
+
+      # 4. Build APK
+      - name: Build with Buildozer
+        run: buildozer android debug
+
+      # 5. Upload APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v2
+        with:
+          name: drivelearn-apk
+          path: bin/*.apk
