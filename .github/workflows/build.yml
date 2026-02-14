@@ -5,18 +5,25 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # Updated to a newer, more stable Linux version
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v2
 
-      # 1. Setup Python
+      # 1. Setup Java 17 (REQUIRED for Gradle to build Android API 31+)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 2. Setup Python
       - name: Set up Python 3.9
         uses: actions/setup-python@v2
         with:
           python-version: 3.9
 
-      # 2. Install Dependencies (The "Linux Tools" Step)
+      # 3. Install Linux Dependencies
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -25,25 +32,24 @@ jobs:
             libtool autoconf automake \
             libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
             libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
-            zlib1g-dev openjdk-17-jdk unzip zip
+            zlib1g-dev unzip zip
 
-# 3. Install Buildozer & Fix Cython/PyJNIus compatibility
+      # 4. Install Buildozer & Pin Cython
       - name: Install Buildozer
         run: |
           pip install --upgrade pip
-          # We must pin Cython to <3.0 because Kivy/PyJNIus isn't fully ready for Cython 3 yet
           pip install "cython<3.0" buildozer
 
-      # 4. Build the APK
+      # 5. Build the APK
       - name: Build with Buildozer
         run: |
           export BUILDOZER_WARN_ON_ROOT=0
           export BUILDOZER_ALLOW_ORG_TEST_DOMAIN=1
           yes | buildozer android debug
 
-      # 5. Upload the APK so you can download it
+      # 6. Upload APK
       - name: Upload APK
-        uses: actions/upload-artifact@v4  # Updated to v4
+        uses: actions/upload-artifact@v4
         with:
           name: drivelearn-apk
           path: bin/*.apk
