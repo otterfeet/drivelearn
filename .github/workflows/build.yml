@@ -27,21 +27,18 @@ jobs:
             libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
             zlib1g-dev openjdk-17-jdk unzip zip
 
-      # 3. Install Buildozer
+# 3. Install Buildozer & Fix Cython/PyJNIus compatibility
       - name: Install Buildozer
         run: |
           pip install --upgrade pip
-          pip install buildozer cython
+          # We must pin Cython to <3.0 because Kivy/PyJNIus isn't fully ready for Cython 3 yet
+          pip install "cython<3.0" buildozer
 
-      # 4. Build the APK (The Magic Step)
+      # 4. Build the APK
       - name: Build with Buildozer
         run: |
-          # This tells Buildozer it's okay to run as root (GitHub Actions is root)
           export BUILDOZER_WARN_ON_ROOT=0
-          # This tells Buildozer it's okay to use the generic 'org.test' name
           export BUILDOZER_ALLOW_ORG_TEST_DOMAIN=1
-          
-          # The "yes |" part automatically types "y" for every question!
           yes | buildozer android debug
 
       # 5. Upload the APK so you can download it
