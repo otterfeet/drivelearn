@@ -5,18 +5,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # Updated to a newer, more stable Linux version
 
     steps:
       - uses: actions/checkout@v2
 
       # 1. Setup Python
-      - name: Set up Python 3.8
+      - name: Set up Python 3.9
         uses: actions/setup-python@v2
         with:
-          python-version: 3.8
+          python-version: 3.9
 
-      # 2. Install Buildozer dependencies
+      # 2. Install Dependencies (The "Linux Tools" Step)
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -25,19 +25,28 @@ jobs:
             libtool autoconf automake \
             libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
             libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
-            zlib1g-dev
+            zlib1g-dev openjdk-17-jdk unzip zip
 
       # 3. Install Buildozer
       - name: Install Buildozer
-        run: pip install buildozer cython==0.29.33
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython
 
-      # 4. Build APK
+      # 4. Build the APK (The Magic Step)
       - name: Build with Buildozer
-        run: buildozer android debug
+        run: |
+          # This tells Buildozer it's okay to run as root (GitHub Actions is root)
+          export BUILDOZER_WARN_ON_ROOT=0
+          # This tells Buildozer it's okay to use the generic 'org.test' name
+          export BUILDOZER_ALLOW_ORG_TEST_DOMAIN=1
+          
+          # The "yes |" part automatically types "y" for every question!
+          yes | buildozer android debug
 
-      # 5. Upload APK
+      # 5. Upload the APK so you can download it
       - name: Upload APK
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4  # Updated to v4
         with:
           name: drivelearn-apk
           path: bin/*.apk
