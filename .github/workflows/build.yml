@@ -5,21 +5,59 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v2
 
-      # This "Action" downloads a pre-made computer (Docker container) 
-      # that already has Android, Java, and Kivy installed perfectly.
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
+      # 1. Setup Java 17 (Required for Android API 31+)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
         with:
-          command: buildozer android debug
-          buildozer_version: master
+          distribution: 'temurin'
+          java-version: '17'
 
-      # Upload the result
+      # 2. Setup Python 3.9
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+
+      # 3. Install System Dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git python3-pip libffi-dev libssl-dev \
+            libtool autoconf automake \
+            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
+            zlib1g-dev unzip zip
+
+      # 4. Install Buildozer & Fix Cython
+      - name: Install Buildozer
+        run: |
+          pip install --upgrade pip
+          pip install "cython<3.0" buildozer
+
+      # 5. Build the APK (With Permission Fix)
+      - name: Build with Buildozer
+        run: |
+          # 1. Initialize the Android platform (downloads SDK/NDK)
+          yes | buildozer android p4a -- hook dist
+          
+          # 2. FIX PERMISSIONS: Force the Gradle wrapper to be executable
+          # (This fixes the "gradlew failed" error)
+          chmod +x .buildozer/android/platform/build-arm64-v8a_armeabi-v7a/dists/drivelearn/gradlew || true
+          
+          # 3. Allow Root & Generic Domain
+          export BUILDOZER_WARN_ON_ROOT=0
+          export BUILDOZER_ALLOW_ORG_TEST_DOMAIN=1
+          
+          # 4. Run the final debug build
+          yes | buildozer android debug
+
+      # 6. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
