@@ -16,7 +16,7 @@ source.dir = .
 version = 0.1
 
 # (list) Source files to include (let empty to include all the files)
-source.include_exts = py,png,jpg,kv,atlas,mp3,json
+source.include_exts = py,png,jpg,kv,atlas,json
 
 # (list) Application requirements
 # Comma separated e.g. requirements = sqlite3,kivy
@@ -49,7 +49,7 @@ orientation = portrait
 fullscreen = 1
 
 # (list) Permissions
-android.permissions = INTERNET,WAKE_LOCK,WRITE_EXTERNAL_STORAGE
+android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE
 
 # (int) Target Android API, should be as high as possible.
 android.api = 31
