@@ -5,6 +5,7 @@ import random
 import threading
 import wave
 import struct
+import math
 from kivy.app import App
 from kivy.uix.label import Label
 from kivy.uix.button import Button
@@ -29,7 +30,7 @@ class DriveLearnApp(App):
         self.history = []
         self.current_card = None
         self.sound = None
-        self.bg_noise = None # The Keep-Alive Sound
+        self.bg_noise = None 
         self.db = {}
 
         # --- UI LAYOUT ---
@@ -85,39 +86,42 @@ class DriveLearnApp(App):
         return self.layout
 
     def setup_storage_and_noise(self):
-        """ 1. Set paths 2. Generate Noise 3. Load Data """
         self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
         self.db_path = os.path.join(self.app_dir, 'progress.json')
         
-        # Start the White Noise Generator
+        # 1. Start Noise Generator
         threading.Thread(target=self.generate_and_play_noise).start()
         
-        # Start Scanning Files
+        # 2. Start Scanning Files
         self.start_background_load()
 
     def generate_and_play_noise(self):
-        """ Creates a quiet WAV file to keep headphones awake """
+        """ Generates a 20Hz Sine Wave (Inaudible but high energy) """
         noise_path = os.path.join(self.app_dir, "keepalive.wav")
         
-        # Only create if missing to save time
-        if not os.path.exists(noise_path):
-            try:
-                with wave.open(noise_path, 'w') as f:
-                    f.setnchannels(1) # Mono
-                    f.setsampwidth(2) # 16-bit
-                    f.setframerate(44100)
+        # Always regenerate to ensure we use the new louder version
+        try:
+            with wave.open(noise_path, 'w') as f:
+                f.setnchannels(1) 
+                f.setsampwidth(2) 
+                f.setframerate(44100)
+                
+                # CONFIGURATION:
+                duration = 10  # seconds
+                frequency = 20 # Hz (Low rumble, invisible to ear)
+                volume = 1500  # Amplitude (Much louder than before)
+                
+                data = bytearray()
+                for i in range(44100 * duration):
+                    # Sine wave formula
+                    value = int(volume * math.sin(2 * math.pi * frequency * i / 44100))
+                    data.extend(struct.pack('<h', value))
                     
-                    # Generate 5 seconds of low-amplitude noise
-                    # Amplitude +/- 50 is barely audible but non-zero
-                    data = bytearray()
-                    for _ in range(44100 * 5):
-                        sample = random.randint(-50, 50)
-                        data.extend(struct.pack('<h', sample))
-                    f.writeframes(data)
-            except Exception as e:
-                print(f"Noise gen failed: {e}")
+                f.writeframes(data)
+        except Exception as e:
+            print(f"Noise gen failed: {e}")
 
-        # Play it on Loop
+        # Play loop on main thread
         Clock.schedule_once(lambda dt: self.start_noise_loop(noise_path), 1)
 
     @mainthread
@@ -126,9 +130,9 @@ class DriveLearnApp(App):
             self.bg_noise = SoundLoader.load(filepath)
             if self.bg_noise:
                 self.bg_noise.loop = True
-                self.bg_noise.volume = 0.05 # 5% Volume (Very Quiet)
+                self.bg_noise.volume = 0.5 # 50% volume of the 20Hz tone
                 self.bg_noise.play()
-                self.debug_label.text += " | Audio Primed"
+                self.debug_label.text += " | DAC Awake (20Hz)"
 
     def start_background_load(self):
         self.label.text = "Scanning Files..."
@@ -204,7 +208,7 @@ class DriveLearnApp(App):
         if os.path.exists(filepath):
             self.sound = SoundLoader.load(filepath)
             if self.sound: 
-                self.sound.volume = 1.0 # Ensure main audio is full volume
+                self.sound.volume = 1.0 
                 self.sound.play()
 
     def get_text(self, filepath):
@@ -317,18 +321,15 @@ class DriveLearnApp(App):
     def _on_keyboard_down(self, window, keycode, scancode, text, modifiers):
         key_id = keycode[0] if isinstance(keycode, tuple) else keycode
         
-        # LEFT (276) / VOL DOWN (25) -> I Know It
-        if key_id in [276, 25]: 
+        if key_id in [276, 25]: # Left / Vol Down
             self.mark_as_known()
             return True
 
-        # UP (273) / VOL UP (24) / SPACE (32) -> Next
-        elif key_id in [273, 275, 24, 32, 13]: 
+        elif key_id in [273, 275, 24, 32, 13]: # Up / Right / Vol Up
             self.next_step()
             return True
 
-        # DOWN (274) -> Smart Rewind
-        elif key_id == 274:
+        elif key_id == 274: # Down
             self.rewind_action()
             return True
             
