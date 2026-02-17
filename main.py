@@ -16,7 +16,7 @@ from kivy.utils import platform
 EXTERNAL_FOLDER_NAME = "DriveLearn"
 AUDIO_SUBFOLDER = "audio_files"
 INTERVALS = [0, 1, 4, 36500] 
-SESSION_LIMIT = 50
+SESSION_LIMIT = 20
 NEW_CARDS_PER_LAUNCH = 50
 # =================================================
 
@@ -24,6 +24,7 @@ class DriveLearnApp(App):
     def build(self):
         self.state = "IDLE" 
         self.queue = []
+        self.history = []  # Stores previous cards
         self.current_card = None
         self.sound = None
         self.db = {}
@@ -31,7 +32,6 @@ class DriveLearnApp(App):
         # --- UI LAYOUT ---
         self.layout = BoxLayout(orientation='vertical', padding=20, spacing=20)
         
-        # 1. Main Status Label
         self.label = Label(
             text="Initializing...", 
             font_size='32sp', 
@@ -43,19 +43,17 @@ class DriveLearnApp(App):
         self.label.bind(size=self.label.setter('text_size'))
         self.layout.add_widget(self.label)
         
-        # 2. Big Start / Next Button (Backup for Volume Keys)
         self.btn_next = Button(
             text="START / NEXT",
             font_size='24sp',
-            background_color=(0, 0.8, 0, 1), # Green
+            background_color=(0, 0.8, 0, 1), 
             size_hint=(1, 0.4)
         )
         self.btn_next.bind(on_press=self.on_screen_button)
         self.layout.add_widget(self.btn_next)
 
-        # 3. Debug Label (Shows Key Codes)
         self.debug_label = Label(
-            text="Press any key to see code...", 
+            text="Key Codes: Press buttons...", 
             font_size='14sp', 
             size_hint=(1, 0.1),
             color=(0.5, 0.5, 0.5, 1)
@@ -64,7 +62,6 @@ class DriveLearnApp(App):
 
         Window.bind(on_key_down=self._on_keyboard_down)
 
-        # --- PATHS ---
         if platform == 'android':
             from android.permissions import request_permissions, Permission
             def callback(permissions, results):
@@ -88,7 +85,7 @@ class DriveLearnApp(App):
         return self.layout
 
     def start_background_load(self):
-        self.label.text = "Scanning Files...\n(Please Wait)"
+        self.label.text = "Scanning Files..."
         threading.Thread(target=self.load_data).start()
 
     def load_data(self):
@@ -149,7 +146,7 @@ class DriveLearnApp(App):
         random.shuffle(self.queue)
         
         if self.queue:
-            self.label.text = f"Ready: {len(self.queue)} Cards\n\n[Press Button or Vol UP]"
+            self.label.text = f"Ready: {len(self.queue)} Cards\n\n[Press NEXT / UP]"
             self.state = "IDLE"
         else:
             self.label.text = "Session Complete!\nNo cards due."
@@ -175,10 +172,15 @@ class DriveLearnApp(App):
             self.label.text = "Session Complete!"
             return
 
+        # 1. Start New Card
         if self.state == "IDLE" or self.state == "FINISHED_CARD":
             if not self.queue:
                 self.label.text = "Session Complete!"
                 return
+            
+            # Save to history before switching
+            if self.current_card:
+                self.history.append(self.current_card)
             
             self.current_card = self.queue.pop(0)
             self.state = "PLAYING_Q"
@@ -188,10 +190,10 @@ class DriveLearnApp(App):
             self.label.color = (1, 1, 1, 1)
             self.play_audio(data['file_a'])
             
-            # Update Button Text
             self.btn_next.text = "SHOW ANSWER"
-            self.btn_next.background_color = (0, 0.5, 1, 1) # Blue
+            self.btn_next.background_color = (0, 0.5, 1, 1)
 
+        # 2. Show Answer
         elif self.state == "PLAYING_Q":
             self.state = "PLAYING_A"
             data = self.db[self.current_card]
@@ -199,12 +201,52 @@ class DriveLearnApp(App):
             self.label.color = (1, 1, 0, 1)
             self.play_audio(data['file_b'])
             
-            # Update Button Text
             self.btn_next.text = "NEXT (Fail)"
-            self.btn_next.background_color = (1, 0, 0, 1) # Red
+            self.btn_next.background_color = (1, 0, 0, 1)
 
+        # 3. Finish (Fail by default)
         elif self.state == "PLAYING_A":
             self.grade_card(success=False)
+
+    def rewind_action(self):
+        """ Smart Rewind: Back 1 Sound Step """
+        
+        # Stop current audio
+        if self.sound: self.sound.stop()
+
+        # Scenario 1: On Answer (English) -> Go back to Question (Spanish)
+        if self.state == "PLAYING_A":
+            self.state = "PLAYING_Q"
+            data = self.db[self.current_card]
+            self.label.text = f"[b]{self.get_text(data['file_a'])}[/b]\n(Box {data['box']})"
+            self.label.color = (1, 1, 1, 1)
+            self.play_audio(data['file_a'])
+            
+            self.btn_next.text = "SHOW ANSWER"
+            self.btn_next.background_color = (0, 0.5, 1, 1)
+
+        # Scenario 2: On Question (Spanish) -> Go back to Previous Card
+        elif self.state == "PLAYING_Q" or self.state == "IDLE":
+            if not self.history:
+                self.label.text = "Cannot Rewind\n(Start of Session)"
+                return
+
+            # Push current card back to front of queue (so we don't lose it)
+            if self.current_card:
+                self.queue.insert(0, self.current_card)
+
+            # Pop previous card from history
+            self.current_card = self.history.pop()
+            
+            # Restart that card from Question
+            self.state = "PLAYING_Q"
+            data = self.db[self.current_card]
+            self.label.text = f"<< REWINDING\n[b]{self.get_text(data['file_a'])}[/b]"
+            self.label.color = (1, 1, 1, 1)
+            self.play_audio(data['file_a'])
+            
+            self.btn_next.text = "SHOW ANSWER"
+            self.btn_next.background_color = (0, 0.5, 1, 1)
 
     def mark_as_known(self):
         if self.current_card:
@@ -230,29 +272,33 @@ class DriveLearnApp(App):
             data['due'] = time.time() + (wait_days * 86400)
 
         threading.Thread(target=self.save_db).start()
+        
         self.state = "FINISHED_CARD"
         self.next_step()
 
     # --- INPUT HANDLERS ---
     
     def on_screen_button(self, instance):
-        # This button acts exactly like Volume UP
         self.next_step()
 
     def _on_keyboard_down(self, window, keycode, scancode, text, modifiers):
         key_id = keycode[0] if isinstance(keycode, tuple) else keycode
         
-        # DEBUG: Show key code on screen
-        self.debug_label.text = f"Key Pressed: {key_id}"
+        self.debug_label.text = f"Key: {key_id}"
         
-        # LEFT / VOL DOWN (25) -> I Know It
+        # LEFT (276) / VOL DOWN (25) -> I Know It
         if key_id in [276, 25]: 
             self.mark_as_known()
             return True
 
-        # RIGHT (275) / VOL UP (24) / SPACE (32) / ENTER (13) -> Next
-        elif key_id in [275, 24, 32, 13]: 
+        # UP (273) / VOL UP (24) / SPACE (32) -> Next
+        elif key_id in [273, 275, 24, 32, 13]: 
             self.next_step()
+            return True
+
+        # DOWN (274) -> Smart Rewind
+        elif key_id == 274:
+            self.rewind_action()
             return True
             
         return False
