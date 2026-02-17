@@ -3,6 +3,8 @@ import os
 import time
 import random
 import threading
+import wave
+import struct
 from kivy.app import App
 from kivy.uix.label import Label
 from kivy.uix.button import Button
@@ -24,9 +26,10 @@ class DriveLearnApp(App):
     def build(self):
         self.state = "IDLE" 
         self.queue = []
-        self.history = []  # Stores previous cards
+        self.history = []
         self.current_card = None
         self.sound = None
+        self.bg_noise = None # The Keep-Alive Sound
         self.db = {}
 
         # --- UI LAYOUT ---
@@ -53,7 +56,7 @@ class DriveLearnApp(App):
         self.layout.add_widget(self.btn_next)
 
         self.debug_label = Label(
-            text="Key Codes: Press buttons...", 
+            text="Waiting for input...", 
             font_size='14sp', 
             size_hint=(1, 0.1),
             color=(0.5, 0.5, 0.5, 1)
@@ -66,7 +69,7 @@ class DriveLearnApp(App):
             from android.permissions import request_permissions, Permission
             def callback(permissions, results):
                 if all(results):
-                    self.start_background_load()
+                    self.setup_storage_and_noise()
                 else:
                     self.label.text = "Permission Denied!"
 
@@ -77,12 +80,55 @@ class DriveLearnApp(App):
             self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
         else:
             self.app_dir = os.path.dirname(os.path.abspath(__file__))
-            self.start_background_load()
-
-        self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
-        self.db_path = os.path.join(self.app_dir, 'progress.json')
+            self.setup_storage_and_noise()
 
         return self.layout
+
+    def setup_storage_and_noise(self):
+        """ 1. Set paths 2. Generate Noise 3. Load Data """
+        self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
+        self.db_path = os.path.join(self.app_dir, 'progress.json')
+        
+        # Start the White Noise Generator
+        threading.Thread(target=self.generate_and_play_noise).start()
+        
+        # Start Scanning Files
+        self.start_background_load()
+
+    def generate_and_play_noise(self):
+        """ Creates a quiet WAV file to keep headphones awake """
+        noise_path = os.path.join(self.app_dir, "keepalive.wav")
+        
+        # Only create if missing to save time
+        if not os.path.exists(noise_path):
+            try:
+                with wave.open(noise_path, 'w') as f:
+                    f.setnchannels(1) # Mono
+                    f.setsampwidth(2) # 16-bit
+                    f.setframerate(44100)
+                    
+                    # Generate 5 seconds of low-amplitude noise
+                    # Amplitude +/- 50 is barely audible but non-zero
+                    data = bytearray()
+                    for _ in range(44100 * 5):
+                        sample = random.randint(-50, 50)
+                        data.extend(struct.pack('<h', sample))
+                    f.writeframes(data)
+            except Exception as e:
+                print(f"Noise gen failed: {e}")
+
+        # Play it on Loop
+        Clock.schedule_once(lambda dt: self.start_noise_loop(noise_path), 1)
+
+    @mainthread
+    def start_noise_loop(self, filepath):
+        if os.path.exists(filepath):
+            self.bg_noise = SoundLoader.load(filepath)
+            if self.bg_noise:
+                self.bg_noise.loop = True
+                self.bg_noise.volume = 0.05 # 5% Volume (Very Quiet)
+                self.bg_noise.play()
+                self.debug_label.text += " | Audio Primed"
 
     def start_background_load(self):
         self.label.text = "Scanning Files..."
@@ -157,7 +203,9 @@ class DriveLearnApp(App):
             except: pass
         if os.path.exists(filepath):
             self.sound = SoundLoader.load(filepath)
-            if self.sound: self.sound.play()
+            if self.sound: 
+                self.sound.volume = 1.0 # Ensure main audio is full volume
+                self.sound.play()
 
     def get_text(self, filepath):
         name = os.path.basename(filepath)
@@ -172,13 +220,11 @@ class DriveLearnApp(App):
             self.label.text = "Session Complete!"
             return
 
-        # 1. Start New Card
         if self.state == "IDLE" or self.state == "FINISHED_CARD":
             if not self.queue:
                 self.label.text = "Session Complete!"
                 return
             
-            # Save to history before switching
             if self.current_card:
                 self.history.append(self.current_card)
             
@@ -193,7 +239,6 @@ class DriveLearnApp(App):
             self.btn_next.text = "SHOW ANSWER"
             self.btn_next.background_color = (0, 0.5, 1, 1)
 
-        # 2. Show Answer
         elif self.state == "PLAYING_Q":
             self.state = "PLAYING_A"
             data = self.db[self.current_card]
@@ -204,41 +249,31 @@ class DriveLearnApp(App):
             self.btn_next.text = "NEXT (Fail)"
             self.btn_next.background_color = (1, 0, 0, 1)
 
-        # 3. Finish (Fail by default)
         elif self.state == "PLAYING_A":
             self.grade_card(success=False)
 
     def rewind_action(self):
-        """ Smart Rewind: Back 1 Sound Step """
-        
-        # Stop current audio
         if self.sound: self.sound.stop()
 
-        # Scenario 1: On Answer (English) -> Go back to Question (Spanish)
         if self.state == "PLAYING_A":
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
             self.label.text = f"[b]{self.get_text(data['file_a'])}[/b]\n(Box {data['box']})"
             self.label.color = (1, 1, 1, 1)
             self.play_audio(data['file_a'])
-            
             self.btn_next.text = "SHOW ANSWER"
             self.btn_next.background_color = (0, 0.5, 1, 1)
 
-        # Scenario 2: On Question (Spanish) -> Go back to Previous Card
         elif self.state == "PLAYING_Q" or self.state == "IDLE":
             if not self.history:
                 self.label.text = "Cannot Rewind\n(Start of Session)"
                 return
 
-            # Push current card back to front of queue (so we don't lose it)
             if self.current_card:
                 self.queue.insert(0, self.current_card)
 
-            # Pop previous card from history
             self.current_card = self.history.pop()
             
-            # Restart that card from Question
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
             self.label.text = f"<< REWINDING\n[b]{self.get_text(data['file_a'])}[/b]"
@@ -276,15 +311,11 @@ class DriveLearnApp(App):
         self.state = "FINISHED_CARD"
         self.next_step()
 
-    # --- INPUT HANDLERS ---
-    
     def on_screen_button(self, instance):
         self.next_step()
 
     def _on_keyboard_down(self, window, keycode, scancode, text, modifiers):
         key_id = keycode[0] if isinstance(keycode, tuple) else keycode
-        
-        self.debug_label.text = f"Key: {key_id}"
         
         # LEFT (276) / VOL DOWN (25) -> I Know It
         if key_id in [276, 25]: 
