@@ -44,10 +44,8 @@ class DriveLearnResetApp(App):
         if platform == 'android':
             from android.permissions import request_permissions, Permission
             def callback(permissions, results):
-                if all(results):
-                    self.load_stats()
-                else:
-                    self.stats_label.text = "Permission Denied."
+                self.load_stats() # Force load regardless of Android silently blocking popup
+                
             request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE], callback)
             self.db_path = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME, 'progress.json')
         else:
