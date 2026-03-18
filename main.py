@@ -16,7 +16,7 @@ import threading
 EXTERNAL_FOLDER_NAME = "DriveLearn"
 AUDIO_SUBFOLDER = "audio_files"
 
-# 6 Boxes: 0(New), 1(1d), 2(4d), 3(7d), 4(30d), 5(Mastered)
+# 6 Boxes: 0(New/Fail), 1(1d), 2(4d), 3(7d), 4(30d), 5(Mastered)
 INTERVALS = [0, 1, 4, 7, 30, 36500] 
 SESSION_LIMIT = 15
 NEW_CARDS_PER_LAUNCH = 50
@@ -72,7 +72,7 @@ class DriveLearnApp(App):
         if platform == 'android':
             from android.permissions import request_permissions, Permission
             def callback(permissions, results):
-                self.start_background_load() # <--- FIX APPLIED HERE
+                self.start_background_load()
             request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE], callback)
             self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
         else:
@@ -107,7 +107,9 @@ class DriveLearnApp(App):
                 try:
                     with open(self.db_path, 'r') as f:
                         self.db = json.load(f)
-                except: self.db = {}
+                except Exception as e: 
+                    self.update_debug(f"DB Load Error: {e}")
+                    self.db = {}
             else: self.db = {}
 
             if os.path.exists(self.audio_dir):
@@ -133,35 +135,36 @@ class DriveLearnApp(App):
                 if new_added > 0: self.save_db()
                 Clock.schedule_once(self.build_session_queue, 0)
             else:
-                self.show_error("Folder Missing")
+                self.show_error("Audio Folder Missing")
         except Exception as e:
-            self.show_error("Crash")
+            self.show_error(f"Crash: {e}")
 
     @mainthread
     def show_error(self, text):
         self.label.text = f"[color=ff0000]{text}[/color]"
 
+    @mainthread
+    def update_debug(self, text):
+        self.debug_label.text = text
+
     def save_db(self):
         try:
             with open(self.db_path, 'w') as f:
                 json.dump(self.db, f)
-        except: pass
+            self.update_debug("Progress saved successfully.")
+        except Exception as e:
+            # If Android blocks the save, it will print the exact error here.
+            self.update_debug(f"SAVE BLOCKED: {str(e)}")
 
     @mainthread
     def build_session_queue(self, dt=None):
         now = time.time()
-        
-        # Pull due reviews (Boxes 1 to 4)
         due = [k for k, v in self.db.items() if v.get('due', 0) <= now and 0 < v['box'] < 5]
-        
-        # Sort reviews: Primary by Box (1 first), Secondary by oldest due time
         due.sort(key=lambda k: (self.db[k]['box'], self.db[k]['due']))
         
-        # Pull new cards (Box 0)
         new_cards = [k for k, v in self.db.items() if v['box'] == 0]
         new_cards.sort() 
         
-        # Fill queue up to 15
         slots = SESSION_LIMIT - len(due)
         if slots > 0:
             self.queue = due + new_cards[:slots]
@@ -192,7 +195,6 @@ class DriveLearnApp(App):
         return name
 
     def refill_queue(self):
-        """ Pulls 1 new card to maintain the 15-card queue silently """
         now = time.time()
         active_ids = set(self.queue)
         if self.current_card: active_ids.add(self.current_card)
@@ -267,7 +269,7 @@ class DriveLearnApp(App):
             data['box'] += 1
             if data['box'] >= len(INTERVALS): data['box'] = len(INTERVALS) - 1
         else:
-            data['box'] = 1 
+            data['box'] = 0  # <---- THIS IS FIXED: Failures drop to Box 0 now!
         
         wait_days = INTERVALS[data['box']]
         if not success:
@@ -285,22 +287,18 @@ class DriveLearnApp(App):
     def _on_keyboard_down(self, window, keycode, scancode, text, modifiers):
         key_id = keycode[0] if isinstance(keycode, tuple) else keycode
         
-        # LEFT/DOWN mapping from Key Remapper (I Know It)
         if key_id in [276, 25]: 
             self.mark_as_known()
             return True
 
-        # UP/RIGHT mapping from Key Remapper (Next Step)
         elif key_id in [273, 275, 24, 32, 13]: 
             self.next_step()
             return True
 
-        # DOWN mapped to Rewind
         elif key_id == 274:
             self.rewind_action()
             return True
             
-        # Optional: ESC key to exit Black Screen mode
         elif key_id == 27:
             if self.run_mode_active:
                 self.toggle_run_mode()
