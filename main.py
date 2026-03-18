@@ -72,10 +72,7 @@ class DriveLearnApp(App):
         if platform == 'android':
             from android.permissions import request_permissions, Permission
             def callback(permissions, results):
-                if all(results):
-                    self.start_background_load()
-                else:
-                    self.label.text = "Permission Denied!"
+                self.start_background_load() # <--- FIX APPLIED HERE
             request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE], callback)
             self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
         else:
