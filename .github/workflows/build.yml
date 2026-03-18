@@ -1,58 +1,44 @@
-name: CI
+name: Build Android APKs
+
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-
+  build-main-app:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      # 1. Setup Java 17 (Required for modern Android builds)
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+    - name: Build Main App
+      uses: ArtemSBulgakov/buildozer-action@v1
+      with:
+        command: buildozer android debug
+        buildozer_version: master
 
-      # 2. Setup Python 3.9
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.9
+    - name: Upload Main APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: DriveLearn-Main-APK
+        path: bin/*.apk
 
-      # 3. Install System Dependencies (Added 32-bit libs to fix gradlew/aapt crashes)
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git python3-pip libffi-dev libssl-dev \
-            libtool autoconf automake \
-            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
-            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
-            zlib1g-dev unzip zip \
-            libstdc++6 lib32stdc++6 lib32z1
+  build-reset-app:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      # 4. Install Buildozer & Pin Cython
-      - name: Install Buildozer
-        run: |
-          pip install --upgrade pip
-          pip install "cython<3.0" buildozer
+    - name: Build Reset App
+      uses: ArtemSBulgakov/buildozer-action@v1
+      with:
+        workdir: ./ResetUtility
+        command: buildozer android debug
+        buildozer_version: master
 
-      # 5. Build the APK
-      - name: Build with Buildozer
-        run: |
-          export BUILDOZER_WARN_ON_ROOT=0
-          export BUILDOZER_ALLOW_ORG_TEST_DOMAIN=1
-          
-          # The "yes" command accepts the SDK license automatically
-          yes | buildozer android debug
-
-      # 6. Upload APK
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: drivelearn-apk
-          path: bin/*.apk
+    - name: Upload Reset APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: DriveLearn-Reset-APK
+        path: ResetUtility/bin/*.apk
