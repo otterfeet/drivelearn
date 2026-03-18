@@ -40,11 +40,11 @@ jobs:
     - name: Build Reset App
       run: |
         export PATH=$PATH:~/.local/bin
-        cd ResetUtility
+        cd DriveLearnReset
         buildozer android debug
 
     - name: Upload Reset APK
       uses: actions/upload-artifact@v4
       with:
         name: DriveLearn-Reset-APK
-        path: ResetUtility/bin/*.apk
+        path: DriveLearnReset/bin/*.apk
