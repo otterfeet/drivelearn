@@ -1,4 +1,4 @@
-name: Build Android APKs
+name: Build Android APK
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-apps:
+  build-app:
     runs-on: ubuntu-22.04
 
     steps:
@@ -34,17 +34,5 @@ jobs:
     - name: Upload Main APK
       uses: actions/upload-artifact@v4
       with:
-        name: DriveLearn-Main-APK
+        name: DriveLearn-All-In-One-APK
         path: bin/*.apk
-
-    - name: Build Reset App
-      run: |
-        export PATH=$PATH:~/.local/bin
-        cd DriveLearnReset
-        buildozer android debug
-
-    - name: Upload Reset APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: DriveLearn-Reset-APK
-        path: DriveLearnReset/bin/*.apk
