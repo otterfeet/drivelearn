@@ -33,6 +33,9 @@ class DriveLearnApp(App):
         self.db = {}
         self.run_mode_active = False
         self.in_settings = False
+        
+        # Mode Management: True = A->B, False = B->A
+        self.play_mode_A_to_B = True
 
         Window.allow_screensaver = False
         Window.clearcolor = (0.1, 0.1, 0.1, 1)
@@ -42,7 +45,7 @@ class DriveLearnApp(App):
         # ================= MAIN UI =================
         self.main_ui = BoxLayout(orientation='vertical', padding=20, spacing=20)
         
-        self.label = Label(text="Initializing...", font_size='32sp', halign="center", valign="middle", markup=True, size_hint=(1, 0.5))
+        self.label = Label(text="Initializing...", font_size='32sp', halign="center", valign="middle", markup=True, size_hint=(1, 0.55))
         self.label.bind(size=self.label.setter('text_size'))
         self.main_ui.add_widget(self.label)
 
@@ -60,9 +63,14 @@ class DriveLearnApp(App):
         # ================= SETTINGS UI =================
         self.settings_ui = BoxLayout(orientation='vertical', padding=30, spacing=20)
         
-        self.stats_label = Label(text="Loading stats...", font_size='18sp', halign="center", valign="middle", size_hint=(1, 0.6), markup=True)
+        self.stats_label = Label(text="Loading stats...", font_size='18sp', halign="center", valign="middle", size_hint=(1, 0.45), markup=True)
         self.stats_label.bind(size=self.stats_label.setter('text_size'))
         self.settings_ui.add_widget(self.stats_label)
+
+        # Mode Toggle Button (Now inside Settings)
+        self.btn_toggle_mode = Button(text="MODE: Front -> Back\n(Tap to swap)", font_size='18sp', background_color=(0.5, 0.3, 0.8, 1), size_hint=(1, 0.15))
+        self.btn_toggle_mode.bind(on_press=self.toggle_play_mode)
+        self.settings_ui.add_widget(self.btn_toggle_mode)
 
         # Wipe Protection Row
         self.wipe_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.2))
@@ -90,15 +98,41 @@ class DriveLearnApp(App):
         # ================= BOOTUP =================
         if platform == 'android':
             self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
+            self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
+            self.update_db_path() 
             self.request_storage_access()
         else:
             self.app_dir = os.path.dirname(os.path.abspath(__file__))
+            self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
+            self.update_db_path() 
             self.start_background_load()
 
-        self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
-        self.db_path = os.path.join(self.app_dir, 'progress.json')
-
         return self.root
+
+    # ================= DYNAMIC PATHS =================
+    def update_db_path(self):
+        filename = 'progress_A_to_B.json' if self.play_mode_A_to_B else 'progress_B_to_A.json'
+        self.db_path = os.path.join(self.app_dir, filename)
+
+    # ================= MODE TOGGLE =================
+    def toggle_play_mode(self, instance):
+        self.play_mode_A_to_B = not self.play_mode_A_to_B
+        self.update_db_path() 
+        
+        if self.play_mode_A_to_B:
+            self.btn_toggle_mode.text = "MODE: Front -> Back\n(Tap to swap)"
+        else:
+            self.btn_toggle_mode.text = "MODE: Back -> Front\n(Tap to swap)"
+
+        # Stop audio and clean slate the session instantly
+        if self.sound: self.sound.stop()
+        self.queue = []
+        self.history = []
+        self.current_card = None
+        self.state = "IDLE"
+        
+        self.stats_label.text = "Loading new mode..."
+        self.start_background_load()
 
     # ================= SETTINGS LOGIC =================
     def open_settings(self, instance):
@@ -145,15 +179,17 @@ class DriveLearnApp(App):
             self.current_card = None
             self.state = "IDLE"
             
-            self.stats_label.text = "[color=00ff00]DATA SUCCESSFULLY CLEARED![/color]\n\nAudio files remain, but all progress is reset."
+            Clock.schedule_once(self.build_session_queue, 0)
+            self.load_stats() # Refresh stats back to 0
+            
+            mode_name = "Front->Back" if self.play_mode_A_to_B else "Back->Front"
+            self.stats_label.text = f"[color=00ff00]{mode_name} DATA CLEARED![/color]\n\n" + self.stats_label.text
+            
             self.wipe_input.opacity = 0
             self.wipe_input.disabled = True
             self.btn_confirm_wipe.opacity = 0
             self.btn_confirm_wipe.disabled = True
             self.btn_init_wipe.text = "WIPED"
-            
-            # Restart queue instantly
-            Clock.schedule_once(self.build_session_queue, 0)
         else:
             self.wipe_input.text = ""
             self.wipe_input.hint_text = "Must type 'clear'!"
@@ -164,7 +200,9 @@ class DriveLearnApp(App):
             box = data.get('box', 0)
             if box in counts: counts[box] += 1
             
+        mode_str = "Front -> Back" if self.play_mode_A_to_B else "Back -> Front"
         self.stats_label.text = (
+            f"[b]CURRENT MODE: {mode_str}[/b]\n"
             f"[b]TOTAL WORDS TRACKED: {len(self.db)}[/b]\n\n"
             f"Box 0 (New/Fail): {counts[0]}\n"
             f"Box 1 (1 Day): {counts[1]}\n"
@@ -216,7 +254,9 @@ class DriveLearnApp(App):
             self.debug_label.opacity = 1
 
     def start_background_load(self):
-        self.label.text = "Scanning Files..."
+        # We don't overwrite the label if we are in settings so stats remain visible
+        if not self.in_settings:
+            self.label.text = "Scanning Files..."
         threading.Thread(target=self.load_data).start()
 
     def load_data(self):
@@ -252,6 +292,10 @@ class DriveLearnApp(App):
                 
                 if new_added > 0: self.save_db()
                 Clock.schedule_once(self.build_session_queue, 0)
+                
+                # If we toggled mode while in settings, refresh the visual stats immediately
+                if self.in_settings:
+                    Clock.schedule_once(lambda dt: self.load_stats(), 0)
             else:
                 self.show_error("Audio Folder Missing")
         except Exception as e:
@@ -269,7 +313,7 @@ class DriveLearnApp(App):
         try:
             with open(self.db_path, 'w') as f:
                 json.dump(self.db, f)
-            self.update_debug("Progress saved successfully.")
+            self.update_debug(f"Progress saved successfully ({'A->B' if self.play_mode_A_to_B else 'B->A'}).")
         except Exception as e:
             self.update_debug(f"SAVE BLOCKED: {str(e)}")
 
@@ -312,6 +356,10 @@ class DriveLearnApp(App):
         return name
 
     def refill_queue(self):
+        # Prevent queue from over-inflating if we fail cards
+        if len(self.queue) >= SESSION_LIMIT:
+            return
+
         now = time.time()
         active_ids = set(self.queue)
         if self.current_card: active_ids.add(self.current_card)
@@ -328,6 +376,12 @@ class DriveLearnApp(App):
         if new_cards:
             self.queue.append(new_cards[0])
 
+    def get_current_play_files(self, data):
+        if self.play_mode_A_to_B:
+            return data['file_a'], data['file_b']
+        else:
+            return data['file_b'], data['file_a']
+
     def next_step(self):
         if not self.queue and not self.current_card: return
 
@@ -338,16 +392,21 @@ class DriveLearnApp(App):
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
             
-            self.label.text = f"[b]{self.get_text(data['file_a'])}[/b]\n(Box {data['box']})"
+            q_file, _ = self.get_current_play_files(data)
+            
+            self.label.text = f"[b]{self.get_text(q_file)}[/b]\n(Box {data['box']})"
             self.label.color = (1, 1, 1, 1)
-            self.play_audio(data['file_a'])
+            self.play_audio(q_file)
 
         elif self.state == "PLAYING_Q":
             self.state = "PLAYING_A"
             data = self.db[self.current_card]
-            self.label.text = f"[b]ANSWER[/b]\n{self.get_text(data['file_b'])}"
+            
+            _, a_file = self.get_current_play_files(data)
+            
+            self.label.text = f"[b]ANSWER[/b]\n{self.get_text(a_file)}"
             self.label.color = (1, 1, 0, 1)
-            self.play_audio(data['file_b'])
+            self.play_audio(a_file)
 
         elif self.state == "PLAYING_A":
             self.grade_card(success=False)
@@ -358,9 +417,11 @@ class DriveLearnApp(App):
         if self.state == "PLAYING_A":
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
-            self.label.text = f"[b]{self.get_text(data['file_a'])}[/b]\n(Box {data['box']})"
+            q_file, _ = self.get_current_play_files(data)
+            
+            self.label.text = f"[b]{self.get_text(q_file)}[/b]\n(Box {data['box']})"
             self.label.color = (1, 1, 1, 1)
-            self.play_audio(data['file_a'])
+            self.play_audio(q_file)
 
         elif self.state == "PLAYING_Q" or self.state == "IDLE":
             if not self.history: return
@@ -369,8 +430,10 @@ class DriveLearnApp(App):
             
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
-            self.label.text = f"<< REWINDING\n[b]{self.get_text(data['file_a'])}[/b]"
-            self.play_audio(data['file_a'])
+            q_file, _ = self.get_current_play_files(data)
+            
+            self.label.text = f"<< REWINDING\n[b]{self.get_text(q_file)}[/b]"
+            self.play_audio(q_file)
 
     def mark_as_known(self):
         if self.current_card:
@@ -402,7 +465,6 @@ class DriveLearnApp(App):
         self.next_step()
 
     def _on_keyboard_down(self, window, keycode, scancode, text, modifiers):
-        # Ignore flashcard remote commands if we are in the settings screen
         if self.in_settings: return False
 
         key_id = keycode[0] if isinstance(keycode, tuple) else keycode
