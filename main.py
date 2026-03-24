@@ -29,10 +29,14 @@ class DriveLearnApp(App):
         self.queue = []
         self.history = []
         self.current_card = None
-        self.sound = None
         self.db = {}
         self.run_mode_active = False
         self.in_settings = False
+        
+        # Audio Preloader Engine
+        self.active_sound = None
+        self.preloaded_sound = None
+        self.preloaded_path = ""
         
         # Mode Management: True = A->B, False = B->A
         self.play_mode_A_to_B = True
@@ -61,19 +65,28 @@ class DriveLearnApp(App):
         self.main_ui.add_widget(self.debug_label)
 
         # ================= SETTINGS UI =================
-        self.settings_ui = BoxLayout(orientation='vertical', padding=30, spacing=20)
+        self.settings_ui = BoxLayout(orientation='vertical', padding=20, spacing=15)
         
-        self.stats_label = Label(text="Loading stats...", font_size='18sp', halign="center", valign="middle", size_hint=(1, 0.45), markup=True)
+        self.stats_label = Label(text="Loading stats...", font_size='18sp', halign="center", valign="middle", size_hint=(1, 0.4), markup=True)
         self.stats_label.bind(size=self.stats_label.setter('text_size'))
         self.settings_ui.add_widget(self.stats_label)
 
-        # Mode Toggle Button (Now inside Settings)
         self.btn_toggle_mode = Button(text="MODE: Front -> Back\n(Tap to swap)", font_size='18sp', background_color=(0.5, 0.3, 0.8, 1), size_hint=(1, 0.15))
         self.btn_toggle_mode.bind(on_press=self.toggle_play_mode)
         self.settings_ui.add_widget(self.btn_toggle_mode)
 
+        # Import / Export Row
+        self.backup_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
+        self.btn_export = Button(text="EXPORT BACKUP", background_color=(0.2, 0.6, 0.2, 1))
+        self.btn_export.bind(on_press=self.export_data)
+        self.btn_import = Button(text="IMPORT BACKUP", background_color=(0.6, 0.4, 0.2, 1))
+        self.btn_import.bind(on_press=self.import_data)
+        self.backup_layout.add_widget(self.btn_export)
+        self.backup_layout.add_widget(self.btn_import)
+        self.settings_ui.add_widget(self.backup_layout)
+
         # Wipe Protection Row
-        self.wipe_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.2))
+        self.wipe_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
         self.btn_init_wipe = Button(text="WIPE PROGRESS", background_color=(0.8, 0, 0, 1))
         self.btn_init_wipe.bind(on_press=self.show_wipe_confirm)
         
@@ -86,58 +99,57 @@ class DriveLearnApp(App):
         self.wipe_layout.add_widget(self.btn_confirm_wipe)
         self.settings_ui.add_widget(self.wipe_layout)
 
-        self.btn_back = Button(text="BACK TO SESSION", size_hint=(1, 0.2), background_color=(0.3, 0.3, 0.3, 1))
+        self.btn_back = Button(text="BACK TO SESSION", size_hint=(1, 0.15), background_color=(0.3, 0.3, 0.3, 1))
         self.btn_back.bind(on_press=self.close_settings)
         self.settings_ui.add_widget(self.btn_back)
 
-        # Start with Main UI
         self.root.add_widget(self.main_ui)
-
         Window.bind(on_key_down=self._on_keyboard_down)
 
         # ================= BOOTUP =================
         if platform == 'android':
             self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
-            self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
-            self.update_db_path() 
-            self.request_storage_access()
         else:
             self.app_dir = os.path.dirname(os.path.abspath(__file__))
-            self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
-            self.update_db_path() 
+            
+        self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
+        self.db_path = os.path.join(self.app_dir, 'progress.json')
+
+        if platform == 'android':
+            self.request_storage_access()
+        else:
             self.start_background_load()
 
         return self.root
 
-    # ================= DYNAMIC PATHS =================
-    def update_db_path(self):
-        filename = 'progress_A_to_B.json' if self.play_mode_A_to_B else 'progress_B_to_A.json'
-        self.db_path = os.path.join(self.app_dir, filename)
+    # ================= UNIFIED DB HELPER =================
+    def get_mode_data(self, card_id):
+        """Returns the specific tracking stats based on the current mode"""
+        data = self.db[card_id]
+        return data['a_to_b'] if self.play_mode_A_to_B else data['b_to_a']
 
     # ================= MODE TOGGLE =================
     def toggle_play_mode(self, instance):
         self.play_mode_A_to_B = not self.play_mode_A_to_B
-        self.update_db_path() 
         
         if self.play_mode_A_to_B:
             self.btn_toggle_mode.text = "MODE: Front -> Back\n(Tap to swap)"
         else:
             self.btn_toggle_mode.text = "MODE: Back -> Front\n(Tap to swap)"
 
-        # Stop audio and clean slate the session instantly
-        if self.sound: self.sound.stop()
+        if self.active_sound: self.active_sound.stop()
         self.queue = []
         self.history = []
         self.current_card = None
         self.state = "IDLE"
         
-        self.stats_label.text = "Loading new mode..."
-        self.start_background_load()
+        Clock.schedule_once(self.build_session_queue, 0)
+        self.load_stats()
 
     # ================= SETTINGS LOGIC =================
     def open_settings(self, instance):
         self.in_settings = True
-        if self.sound: self.sound.stop()
+        if self.active_sound: self.active_sound.stop()
         self.root.clear_widgets()
         self.root.add_widget(self.settings_ui)
         self.load_stats()
@@ -159,6 +171,34 @@ class DriveLearnApp(App):
             self.label.text = f"Queue: {len(self.queue)} Cards\n\n[Press Remote to Resume]"
             self.state = "IDLE"
 
+    # ================= IMPORT & EXPORT =================
+    def export_data(self, instance):
+        backup_path = os.path.join(self.app_dir, 'progress_backup.json')
+        try:
+            with open(backup_path, 'w') as f:
+                json.dump(self.db, f)
+            self.stats_label.text = f"[color=00ff00]BACKUP SAVED TO FOLDER![/color]\n\n" + self.stats_label.text
+        except Exception as e:
+            self.stats_label.text = f"[color=ff0000]Export Failed: {e}[/color]\n\n" + self.stats_label.text
+
+    def import_data(self, instance):
+        backup_path = os.path.join(self.app_dir, 'progress_backup.json')
+        if os.path.exists(backup_path):
+            try:
+                with open(backup_path, 'r') as f:
+                    self.db = json.load(f)
+                self.save_db()
+                self.queue = []
+                self.current_card = None
+                self.state = "IDLE"
+                Clock.schedule_once(self.build_session_queue, 0)
+                self.load_stats()
+                self.stats_label.text = f"[color=00ff00]BACKUP RESTORED SUCCESSFULLY![/color]\n\n" + self.stats_label.text
+            except Exception as e:
+                self.stats_label.text = f"[color=ff0000]Import Failed: {e}[/color]\n\n" + self.stats_label.text
+        else:
+            self.stats_label.text = f"[color=ffff00]No 'progress_backup.json' found in folder![/color]\n\n" + self.stats_label.text
+
     def show_wipe_confirm(self, instance):
         self.btn_init_wipe.text = "Type 'clear' ->"
         self.btn_init_wipe.disabled = True
@@ -169,18 +209,21 @@ class DriveLearnApp(App):
 
     def execute_wipe(self, instance):
         if self.wipe_input.text.strip().lower() == 'clear':
-            if os.path.exists(self.db_path):
-                try: os.remove(self.db_path)
-                except: pass
-            
-            self.db = {}
+            # Wipe ONLY the current mode's progress
+            for word_id, data in self.db.items():
+                if self.play_mode_A_to_B:
+                    data['a_to_b'] = {"box": 0, "due": 0}
+                else:
+                    data['b_to_a'] = {"box": 0, "due": 0}
+                    
+            self.save_db()
             self.queue = []
             self.history = []
             self.current_card = None
             self.state = "IDLE"
             
             Clock.schedule_once(self.build_session_queue, 0)
-            self.load_stats() # Refresh stats back to 0
+            self.load_stats() 
             
             mode_name = "Front->Back" if self.play_mode_A_to_B else "Back->Front"
             self.stats_label.text = f"[color=00ff00]{mode_name} DATA CLEARED![/color]\n\n" + self.stats_label.text
@@ -196,8 +239,9 @@ class DriveLearnApp(App):
 
     def load_stats(self):
         counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-        for data in self.db.values():
-            box = data.get('box', 0)
+        for word_id in self.db:
+            mode_data = self.get_mode_data(word_id)
+            box = mode_data.get('box', 0)
             if box in counts: counts[box] += 1
             
         mode_str = "Front -> Back" if self.play_mode_A_to_B else "Back -> Front"
@@ -254,22 +298,33 @@ class DriveLearnApp(App):
             self.debug_label.opacity = 1
 
     def start_background_load(self):
-        # We don't overwrite the label if we are in settings so stats remain visible
         if not self.in_settings:
             self.label.text = "Scanning Files..."
         threading.Thread(target=self.load_data).start()
 
     def load_data(self):
         try:
+            # 1. Load existing database
             if os.path.exists(self.db_path):
                 try:
                     with open(self.db_path, 'r') as f:
                         self.db = json.load(f)
+                        
+                    # MIGRATION CHECK: Convert old DBs to new Unified format silently
+                    for k, v in list(self.db.items()):
+                        if 'box' in v:
+                            self.db[k] = {
+                                "a_to_b": {"box": v.get("box", 0), "due": v.get("due", 0)},
+                                "b_to_a": {"box": 0, "due": 0},
+                                "file_a": v.get("file_a", ""),
+                                "file_b": v.get("file_b", "")
+                            }
                 except Exception as e: 
                     self.update_debug(f"DB Load Error: {e}")
                     self.db = {}
             else: self.db = {}
 
+            # 2. Scan audio folder for new files
             if os.path.exists(self.audio_dir):
                 all_files = os.listdir(self.audio_dir)
                 a_files = sorted([f for f in all_files if "_A_" in f and f.endswith(('.mp3', '.wav', '.ogg'))])
@@ -284,7 +339,8 @@ class DriveLearnApp(App):
                         file_b = match_b if match_b else f_a
                         
                         self.db[word_id] = {
-                            "box": 0, "due": 0,
+                            "a_to_b": {"box": 0, "due": 0},
+                            "b_to_a": {"box": 0, "due": 0},
                             "file_a": os.path.join(self.audio_dir, f_a),
                             "file_b": os.path.join(self.audio_dir, file_b)
                         }
@@ -293,7 +349,6 @@ class DriveLearnApp(App):
                 if new_added > 0: self.save_db()
                 Clock.schedule_once(self.build_session_queue, 0)
                 
-                # If we toggled mode while in settings, refresh the visual stats immediately
                 if self.in_settings:
                     Clock.schedule_once(lambda dt: self.load_stats(), 0)
             else:
@@ -313,17 +368,17 @@ class DriveLearnApp(App):
         try:
             with open(self.db_path, 'w') as f:
                 json.dump(self.db, f)
-            self.update_debug(f"Progress saved successfully ({'A->B' if self.play_mode_A_to_B else 'B->A'}).")
+            self.update_debug(f"Progress saved successfully.")
         except Exception as e:
             self.update_debug(f"SAVE BLOCKED: {str(e)}")
 
     @mainthread
     def build_session_queue(self, dt=None):
         now = time.time()
-        due = [k for k, v in self.db.items() if v.get('due', 0) <= now and 0 < v['box'] < 5]
-        due.sort(key=lambda k: (self.db[k]['box'], self.db[k]['due']))
+        due = [k for k in self.db if self.get_mode_data(k).get('due', 0) <= now and 0 < self.get_mode_data(k)['box'] < 5]
+        due.sort(key=lambda k: (self.get_mode_data(k)['box'], self.get_mode_data(k)['due']))
         
-        new_cards = [k for k, v in self.db.items() if v['box'] == 0]
+        new_cards = [k for k in self.db if self.get_mode_data(k)['box'] == 0]
         new_cards.sort() 
         
         slots = SESSION_LIMIT - len(due)
@@ -341,13 +396,27 @@ class DriveLearnApp(App):
         else:
             self.label.text = "Session Complete!"
 
+    # ================= ZERO-LAG AUDIO ENGINE =================
     def play_audio(self, filepath):
-        if self.sound:
-            try: self.sound.stop()
+        if self.active_sound:
+            try: self.active_sound.stop()
             except: pass
+            
+        # If it was preloaded, play it instantly!
+        if filepath == self.preloaded_path and self.preloaded_sound:
+            self.active_sound = self.preloaded_sound
+        else:
+            if os.path.exists(filepath):
+                self.active_sound = SoundLoader.load(filepath)
+                
+        if self.active_sound: 
+            self.active_sound.play()
+
+    def preload_audio(self, filepath):
+        """Silently loads the next track into memory while you listen"""
         if os.path.exists(filepath):
-            self.sound = SoundLoader.load(filepath)
-            if self.sound: self.sound.play()
+            self.preloaded_sound = SoundLoader.load(filepath)
+            self.preloaded_path = filepath
 
     def get_text(self, filepath):
         name = os.path.basename(filepath)
@@ -356,7 +425,6 @@ class DriveLearnApp(App):
         return name
 
     def refill_queue(self):
-        # Prevent queue from over-inflating if we fail cards
         if len(self.queue) >= SESSION_LIMIT:
             return
 
@@ -364,14 +432,14 @@ class DriveLearnApp(App):
         active_ids = set(self.queue)
         if self.current_card: active_ids.add(self.current_card)
         
-        due = [k for k, v in self.db.items() if v.get('due', 0) <= now and 0 < v['box'] < 5 and k not in active_ids]
-        due.sort(key=lambda k: (self.db[k]['box'], self.db[k]['due']))
+        due = [k for k in self.db if self.get_mode_data(k).get('due', 0) <= now and 0 < self.get_mode_data(k)['box'] < 5 and k not in active_ids]
+        due.sort(key=lambda k: (self.get_mode_data(k)['box'], self.get_mode_data(k)['due']))
         
         if due:
             self.queue.append(due[0])
             return
 
-        new_cards = [k for k, v in self.db.items() if v['box'] == 0 and k not in active_ids]
+        new_cards = [k for k in self.db if self.get_mode_data(k)['box'] == 0 and k not in active_ids]
         new_cards.sort()
         if new_cards:
             self.queue.append(new_cards[0])
@@ -391,35 +459,45 @@ class DriveLearnApp(App):
             self.current_card = self.queue.pop(0)
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
+            mode_data = self.get_mode_data(self.current_card)
             
-            q_file, _ = self.get_current_play_files(data)
+            q_file, a_file = self.get_current_play_files(data)
             
-            self.label.text = f"[b]{self.get_text(q_file)}[/b]\n(Box {data['box']})"
+            self.label.text = f"[b]{self.get_text(q_file)}[/b]\n(Box {mode_data['box']})"
             self.label.color = (1, 1, 1, 1)
+            
             self.play_audio(q_file)
+            self.preload_audio(a_file) # Preload the answer!
 
         elif self.state == "PLAYING_Q":
             self.state = "PLAYING_A"
             data = self.db[self.current_card]
-            
-            _, a_file = self.get_current_play_files(data)
+            q_file, a_file = self.get_current_play_files(data)
             
             self.label.text = f"[b]ANSWER[/b]\n{self.get_text(a_file)}"
             self.label.color = (1, 1, 0, 1)
+            
             self.play_audio(a_file)
+            
+            # Preload the NEXT question in the queue!
+            if self.queue:
+                next_card_data = self.db[self.queue[0]]
+                next_q_file, _ = self.get_current_play_files(next_card_data)
+                self.preload_audio(next_q_file)
 
         elif self.state == "PLAYING_A":
             self.grade_card(success=False)
 
     def rewind_action(self):
-        if self.sound: self.sound.stop()
+        if self.active_sound: self.active_sound.stop()
 
         if self.state == "PLAYING_A":
             self.state = "PLAYING_Q"
             data = self.db[self.current_card]
+            mode_data = self.get_mode_data(self.current_card)
             q_file, _ = self.get_current_play_files(data)
             
-            self.label.text = f"[b]{self.get_text(q_file)}[/b]\n(Box {data['box']})"
+            self.label.text = f"[b]{self.get_text(q_file)}[/b]\n(Box {mode_data['box']})"
             self.label.color = (1, 1, 1, 1)
             self.play_audio(q_file)
 
@@ -443,20 +521,20 @@ class DriveLearnApp(App):
 
     def grade_card(self, success):
         if not self.current_card: return
-        data = self.db[self.current_card]
+        mode_data = self.get_mode_data(self.current_card)
         
         if success:
-            data['box'] += 1
-            if data['box'] >= len(INTERVALS): data['box'] = len(INTERVALS) - 1
+            mode_data['box'] += 1
+            if mode_data['box'] >= len(INTERVALS): mode_data['box'] = len(INTERVALS) - 1
         else:
-            data['box'] = 0 
+            mode_data['box'] = 0 
         
-        wait_days = INTERVALS[data['box']]
+        wait_days = INTERVALS[mode_data['box']]
         if not success:
-            data['due'] = time.time() + 300
+            mode_data['due'] = time.time()  # Instant database reset, no 300s lock
             self.queue.append(self.current_card) 
         else:
-            data['due'] = time.time() + (wait_days * 86400)
+            mode_data['due'] = time.time() + (wait_days * 86400)
 
         threading.Thread(target=self.save_db).start()
         
