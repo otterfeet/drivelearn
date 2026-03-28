@@ -20,7 +20,6 @@ from kivy.utils import platform
 
 # ================= CRASH LOGGER =================
 def write_crash_log(crash_text):
-    """Writes crash directly to the Downloads folder"""
     try:
         log_path = "/storage/emulated/0/Download/DriveLearn_Crash.txt"
         with open(log_path, "a") as f:
@@ -29,14 +28,12 @@ def write_crash_log(crash_text):
     except:
         pass 
 
-# GLOBAL EXCEPTION HOOK: Catches EVERYTHING, even button-click errors
 def global_exception_handler(exctype, value, tb):
     err = "".join(traceback.format_exception(exctype, value, tb))
     write_crash_log(f"GLOBAL EXCEPTION:\n{err}")
     sys.__excepthook__(exctype, value, tb)
 
 sys.excepthook = global_exception_handler
-
 
 # ================= CONFIGURATION =================
 EXTERNAL_FOLDER_NAME = "DriveLearn"
@@ -62,7 +59,6 @@ class DriveLearnApp(App):
             self.active_sound = None
             self.preloaded_sound = None
             self.preloaded_path = ""
-            self.media_session = None
             self.wake_lock = None
             
             self.play_mode_A_to_B = True
@@ -103,7 +99,8 @@ class DriveLearnApp(App):
             self.btn_toggle_mode.bind(on_press=self.toggle_play_mode)
             self.toggles_layout.add_widget(self.btn_toggle_mode)
 
-            self.btn_toggle_media = Button(text="MEDIA MODE: OFF", font_size='16sp', background_color=(0.8, 0.4, 0.2, 1))
+            # Updated Toggle Button Text
+            self.btn_toggle_media = Button(text="CAR/BACKGROUND: OFF", font_size='16sp', background_color=(0.8, 0.4, 0.2, 1))
             self.btn_toggle_media.bind(on_press=self.toggle_media_mode)
             self.toggles_layout.add_widget(self.btn_toggle_media)
             
@@ -211,10 +208,10 @@ class DriveLearnApp(App):
             self.config["binds"] = {"next": [], "known": [], "rewind": []}
 
         if self.config.get("media_mode", False):
-            self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
+            self.btn_toggle_media.text = "CAR/BACKGROUND: ON"
             self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
         else:
-            self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
+            self.btn_toggle_media.text = "CAR/BACKGROUND: OFF"
             self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
 
     def save_user_config(self):
@@ -230,12 +227,11 @@ class DriveLearnApp(App):
         self.save_user_config()
         
         if self.config["media_mode"]:
-            # Update UI instantly before trying the risky Java code
-            self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
+            self.btn_toggle_media.text = "CAR/BACKGROUND: ON"
             self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
             self.setup_media_session()
         else:
-            self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
+            self.btn_toggle_media.text = "CAR/BACKGROUND: OFF"
             self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
             self.disable_media_session()
 
@@ -245,48 +241,46 @@ class DriveLearnApp(App):
             from jnius import autoclass
             Context = autoclass('android.content.Context')
             AudioManager = autoclass('android.media.AudioManager')
-            MediaSession = autoclass('android.media.session.MediaSession')
-            PlaybackStateBuilder = autoclass('android.media.session.PlaybackState$Builder')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
+            # 1. Violently steal Audio Focus so the car stops talking to Spotify
             audio_manager = PythonActivity.mActivity.getSystemService(Context.AUDIO_SERVICE)
             audio_manager.requestAudioFocus(None, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
 
-            if not self.media_session:
-                self.media_session = MediaSession(PythonActivity.mActivity, "DriveLearn")
-                self.media_session.setFlags(3)
-                
-            state_builder = PlaybackStateBuilder()
-            state_builder.setActions(512 | 32 | 16) 
-            state_builder.setState(3, 0, 1.0) 
-            self.media_session.setPlaybackState(state_builder.build())
-            self.media_session.setActive(True)
-            
+            # 2. Grab a Wake Lock so the CPU keeps accepting Bluetooth commands in the dark
             power_manager = PythonActivity.mActivity.getSystemService(Context.POWER_SERVICE)
             if not self.wake_lock:
                 self.wake_lock = power_manager.newWakeLock(1, "DriveLearn:KeepAlive")
                 self.wake_lock.acquire()
                 
-            self.update_debug("Background Media Mode ON")
+            self.update_debug("Audio Focus & WakeLock ON")
             
         except Exception as e:
             err = traceback.format_exc()
-            write_crash_log(f"MEDIA SESSION SETUP FAILED:\n{err}")
-            self.update_debug("Media Setup Failed! Check Crash Log.")
+            write_crash_log(f"AUDIO FOCUS SETUP FAILED:\n{err}")
+            self.update_debug("Audio Setup Failed! Check Crash Log.")
 
     def disable_media_session(self):
         if platform != 'android': return
         try:
-            if self.media_session:
-                self.media_session.setActive(False)
+            from jnius import autoclass
+            Context = autoclass('android.content.Context')
+            AudioManager = autoclass('android.media.AudioManager')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            
+            # Abandon Audio Focus
+            audio_manager = PythonActivity.mActivity.getSystemService(Context.AUDIO_SERVICE)
+            audio_manager.abandonAudioFocus(None)
+
+            # Release Wake Lock
             if self.wake_lock:
                 try: self.wake_lock.release()
                 except: pass
                 self.wake_lock = None
                 
-            self.update_debug("Background Media Mode OFF")
+            self.update_debug("Audio Focus & WakeLock OFF")
         except Exception as e:
-            write_crash_log(f"MEDIA SESSION DISABLE FAILED:\n{traceback.format_exc()}")
+            write_crash_log(f"AUDIO FOCUS DISABLE FAILED:\n{traceback.format_exc()}")
 
     # ================= KEY BINDING LOGIC =================
     def start_binding(self, action, button_widget):
@@ -556,7 +550,6 @@ class DriveLearnApp(App):
                 
                 new_added = 0
                 for f_a in a_files:
-                    # >>> Removed the 50 card limit! It now registers EVERYTHING <<<
                     word_id = f_a.split("_A_")[0]
                     if word_id not in self.db:
                         match_b = next((x for x in all_files if x.startswith(word_id) and "_B_" in x), None)
