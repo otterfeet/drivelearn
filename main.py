@@ -39,7 +39,6 @@ NEW_CARDS_PER_LAUNCH = 50
 
 class DriveLearnApp(App):
     def build(self):
-        # We wrap the ENTIRE boot process in a try/except to catch launch crashes!
         try:
             self.state = "IDLE" 
             self.queue = []
@@ -163,7 +162,7 @@ class DriveLearnApp(App):
             os.makedirs(self.app_dir, exist_ok=True)
             os.makedirs(self.audio_dir, exist_ok=True)
 
-            self.load_config()
+            self.load_user_config()
 
             if platform == 'android':
                 self.request_storage_access()
@@ -173,7 +172,6 @@ class DriveLearnApp(App):
             return self.root
 
         except Exception as e:
-            # IF IT CRASHES, PRINT IT TO THE SCREEN IN RED
             err = traceback.format_exc()
             write_crash_log(err)
             err_label = Label(text=f"FATAL BOOT CRASH:\n\n{err}", color=(1,0,0,1), text_size=(Window.width-40, None), halign="left", valign="top")
@@ -190,7 +188,7 @@ class DriveLearnApp(App):
     def on_pause(self):
         return True
 
-    def load_config(self):
+    def load_user_config(self):
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, 'r') as f:
@@ -210,7 +208,7 @@ class DriveLearnApp(App):
             self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
             self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
 
-    def save_config(self):
+    def save_user_config(self):
         try:
             with open(self.config_path, 'w') as f:
                 json.dump(self.config, f)
@@ -220,7 +218,7 @@ class DriveLearnApp(App):
     def toggle_media_mode(self, instance=None):
         current_state = self.config.get("media_mode", False)
         self.config["media_mode"] = not current_state
-        self.save_config()
+        self.save_user_config()
         
         if self.config["media_mode"]:
             self.setup_media_session()
@@ -287,7 +285,7 @@ class DriveLearnApp(App):
 
     def reset_binds(self, instance):
         self.config["binds"] = {"next": [], "known": [], "rewind": []}
-        self.save_config()
+        self.save_user_config()
         self.stats_label.text = "[color=ffff00]Custom Keybinds Reset to Default![/color]\n\n" + self.stats_label.text
 
     # ================= UNIFIED DB HELPER =================
@@ -759,7 +757,7 @@ class DriveLearnApp(App):
             action = self.waiting_for_key
             if key_id not in self.config["binds"][action]:
                 self.config["binds"][action].append(key_id)
-                self.save_config()
+                self.save_user_config()
             
             self.waiting_for_key = None
             self.btn_bind_next.text = "Map NEXT"
