@@ -23,10 +23,20 @@ def write_crash_log(crash_text):
     """Writes crash directly to the Downloads folder"""
     try:
         log_path = "/storage/emulated/0/Download/DriveLearn_Crash.txt"
-        with open(log_path, "w") as f:
+        with open(log_path, "a") as f:
+            f.write("\n\n--- NEW LOG ---\n")
             f.write(crash_text)
     except:
-        pass # Failsafe
+        pass 
+
+# GLOBAL EXCEPTION HOOK: Catches EVERYTHING, even button-click errors
+def global_exception_handler(exctype, value, tb):
+    err = "".join(traceback.format_exception(exctype, value, tb))
+    write_crash_log(f"GLOBAL EXCEPTION:\n{err}")
+    sys.__excepthook__(exctype, value, tb)
+
+sys.excepthook = global_exception_handler
+
 
 # ================= CONFIGURATION =================
 EXTERNAL_FOLDER_NAME = "DriveLearn"
@@ -34,7 +44,6 @@ AUDIO_SUBFOLDER = "audio_files"
 
 INTERVALS = [0, 1, 4, 7, 30, 36500] 
 SESSION_LIMIT = 15
-NEW_CARDS_PER_LAUNCH = 50
 # =================================================
 
 class DriveLearnApp(App):
@@ -158,7 +167,6 @@ class DriveLearnApp(App):
             self.db_path = os.path.join(self.app_dir, 'progress.json')
             self.config_path = os.path.join(self.app_dir, 'config.json')
 
-            # FORCE CREATE DIRECTORIES SO WE DON'T CRASH
             os.makedirs(self.app_dir, exist_ok=True)
             os.makedirs(self.audio_dir, exist_ok=True)
 
@@ -173,7 +181,7 @@ class DriveLearnApp(App):
 
         except Exception as e:
             err = traceback.format_exc()
-            write_crash_log(err)
+            write_crash_log(f"FATAL BOOT CRASH:\n{err}")
             err_label = Label(text=f"FATAL BOOT CRASH:\n\n{err}", color=(1,0,0,1), text_size=(Window.width-40, None), halign="left", valign="top")
             err_label.bind(size=err_label.setter('text_size'))
             return err_label
@@ -183,7 +191,8 @@ class DriveLearnApp(App):
         try:
             if getattr(self, 'config', {}).get("media_mode", False):
                 self.setup_media_session()
-        except: pass
+        except Exception as e: 
+            write_crash_log(f"ON START MEDIA ERROR:\n{traceback.format_exc()}")
 
     def on_pause(self):
         return True
@@ -221,8 +230,13 @@ class DriveLearnApp(App):
         self.save_user_config()
         
         if self.config["media_mode"]:
+            # Update UI instantly before trying the risky Java code
+            self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
+            self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
             self.setup_media_session()
         else:
+            self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
+            self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
             self.disable_media_session()
 
     def setup_media_session(self):
@@ -254,10 +268,11 @@ class DriveLearnApp(App):
                 self.wake_lock.acquire()
                 
             self.update_debug("Background Media Mode ON")
-            self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
-            self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
+            
         except Exception as e:
-            self.update_debug(f"Media Setup Error: {e}")
+            err = traceback.format_exc()
+            write_crash_log(f"MEDIA SESSION SETUP FAILED:\n{err}")
+            self.update_debug("Media Setup Failed! Check Crash Log.")
 
     def disable_media_session(self):
         if platform != 'android': return
@@ -270,10 +285,8 @@ class DriveLearnApp(App):
                 self.wake_lock = None
                 
             self.update_debug("Background Media Mode OFF")
-            self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
-            self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
         except Exception as e:
-            pass
+            write_crash_log(f"MEDIA SESSION DISABLE FAILED:\n{traceback.format_exc()}")
 
     # ================= KEY BINDING LOGIC =================
     def start_binding(self, action, button_widget):
@@ -543,8 +556,7 @@ class DriveLearnApp(App):
                 
                 new_added = 0
                 for f_a in a_files:
-                    if new_added >= NEW_CARDS_PER_LAUNCH: break
-                    
+                    # >>> Removed the 50 card limit! It now registers EVERYTHING <<<
                     word_id = f_a.split("_A_")[0]
                     if word_id not in self.db:
                         match_b = next((x for x in all_files if x.startswith(word_id) and "_B_" in x), None)
@@ -793,4 +805,4 @@ if __name__ == '__main__':
     try:
         DriveLearnApp().run()
     except Exception as e:
-        write_crash_log(traceback.format_exc())
+        write_crash_log(f"__MAIN__ CRASH:\n{traceback.format_exc()}")
