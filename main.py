@@ -3,21 +3,35 @@ import os
 import time
 import random
 import threading
+import sys
+import traceback
+
 from kivy.app import App
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.popup import Popup
+from kivy.uix.filechooser import FileChooserListView
 from kivy.core.window import Window
 from kivy.core.audio import SoundLoader
 from kivy.clock import Clock, mainthread
 from kivy.utils import platform
 
+# ================= CRASH LOGGER =================
+def write_crash_log(crash_text):
+    """Writes crash directly to the Downloads folder"""
+    try:
+        log_path = "/storage/emulated/0/Download/DriveLearn_Crash.txt"
+        with open(log_path, "w") as f:
+            f.write(crash_text)
+    except:
+        pass # Failsafe
+
 # ================= CONFIGURATION =================
 EXTERNAL_FOLDER_NAME = "DriveLearn"
 AUDIO_SUBFOLDER = "audio_files"
 
-# 6 Boxes: 0(New/Fail), 1(1d), 2(4d), 3(7d), 4(30d), 5(Mastered)
 INTERVALS = [0, 1, 4, 7, 30, 36500] 
 SESSION_LIMIT = 15
 NEW_CARDS_PER_LAUNCH = 50
@@ -25,144 +39,153 @@ NEW_CARDS_PER_LAUNCH = 50
 
 class DriveLearnApp(App):
     def build(self):
-        self.state = "IDLE" 
-        self.queue = []
-        self.history = []
-        self.current_card = None
-        self.db = {}
-        self.config = {}
-        self.run_mode_active = False
-        self.in_settings = False
-        self.waiting_for_key = None
-        
-        # Audio & Media Engines
-        self.active_sound = None
-        self.preloaded_sound = None
-        self.preloaded_path = ""
-        self.media_session = None
-        self.wake_lock = None
-        
-        # Mode Management: True = A->B, False = B->A
-        self.play_mode_A_to_B = True
-
-        Window.allow_screensaver = False
-        Window.clearcolor = (0.1, 0.1, 0.1, 1)
-
-        self.root = BoxLayout(orientation='vertical')
-
-        # ================= MAIN UI =================
-        self.main_ui = BoxLayout(orientation='vertical', padding=20, spacing=20)
-        
-        self.label = Label(text="Initializing...", font_size='32sp', halign="center", valign="middle", markup=True, size_hint=(1, 0.55))
-        self.label.bind(size=self.label.setter('text_size'))
-        self.main_ui.add_widget(self.label)
-
-        self.btn_run_mode = Button(text="ENTER RUN MODE\n(Black Screen)", font_size='20sp', background_color=(0.3, 0.3, 0.3, 1), size_hint=(1, 0.2))
-        self.btn_run_mode.bind(on_press=self.toggle_run_mode)
-        self.main_ui.add_widget(self.btn_run_mode)
-
-        self.btn_settings = Button(text="SETTINGS & STATS", font_size='20sp', background_color=(0.2, 0.4, 0.6, 1), size_hint=(1, 0.15))
-        self.btn_settings.bind(on_press=self.open_settings)
-        self.main_ui.add_widget(self.btn_settings)
-
-        self.debug_label = Label(text="System Ready", font_size='14sp', size_hint=(1, 0.1), color=(0.5, 0.5, 0.5, 1))
-        self.main_ui.add_widget(self.debug_label)
-
-        # ================= SETTINGS UI =================
-        self.settings_ui = BoxLayout(orientation='vertical', padding=20, spacing=15)
-        
-        self.stats_label = Label(text="Loading stats...", font_size='16sp', halign="center", valign="middle", size_hint=(1, 0.25), markup=True)
-        self.stats_label.bind(size=self.stats_label.setter('text_size'))
-        self.settings_ui.add_widget(self.stats_label)
-
-        # Toggles Row
-        self.toggles_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
-        
-        self.btn_toggle_mode = Button(text="MODE: Front -> Back", font_size='16sp', background_color=(0.5, 0.3, 0.8, 1))
-        self.btn_toggle_mode.bind(on_press=self.toggle_play_mode)
-        self.toggles_layout.add_widget(self.btn_toggle_mode)
-
-        self.btn_toggle_media = Button(text="MEDIA MODE: OFF", font_size='16sp', background_color=(0.8, 0.4, 0.2, 1))
-        self.btn_toggle_media.bind(on_press=self.toggle_media_mode)
-        self.toggles_layout.add_widget(self.btn_toggle_media)
-        
-        self.settings_ui.add_widget(self.toggles_layout)
-
-        # Keybinds Row
-        self.binds_layout = BoxLayout(orientation='horizontal', spacing=5, size_hint=(1, 0.15))
-        self.btn_bind_next = Button(text="Map NEXT", background_color=(0.3, 0.3, 0.3, 1))
-        self.btn_bind_next.bind(on_press=lambda x: self.start_binding("next", self.btn_bind_next))
-        
-        self.btn_bind_known = Button(text="Map KNOWN", background_color=(0.3, 0.3, 0.3, 1))
-        self.btn_bind_known.bind(on_press=lambda x: self.start_binding("known", self.btn_bind_known))
-        
-        self.btn_bind_rewind = Button(text="Map REWIND", background_color=(0.3, 0.3, 0.3, 1))
-        self.btn_bind_rewind.bind(on_press=lambda x: self.start_binding("rewind", self.btn_bind_rewind))
-        
-        self.btn_bind_reset = Button(text="RESET\nBINDS", background_color=(0.6, 0.2, 0.2, 1), size_hint=(0.5, 1))
-        self.btn_bind_reset.bind(on_press=self.reset_binds)
-
-        self.binds_layout.add_widget(self.btn_bind_next)
-        self.binds_layout.add_widget(self.btn_bind_known)
-        self.binds_layout.add_widget(self.btn_bind_rewind)
-        self.binds_layout.add_widget(self.btn_bind_reset)
-        self.settings_ui.add_widget(self.binds_layout)
-
-        # Import / Export Row
-        self.backup_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
-        self.btn_export = Button(text="EXPORT BACKUP", background_color=(0.2, 0.6, 0.2, 1))
-        self.btn_export.bind(on_press=self.export_data)
-        self.btn_import = Button(text="IMPORT BACKUP", background_color=(0.6, 0.4, 0.2, 1))
-        self.btn_import.bind(on_press=self.import_data)
-        self.backup_layout.add_widget(self.btn_export)
-        self.backup_layout.add_widget(self.btn_import)
-        self.settings_ui.add_widget(self.backup_layout)
-
-        # Wipe Protection Row
-        self.wipe_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
-        self.btn_init_wipe = Button(text="WIPE PROGRESS", background_color=(0.8, 0, 0, 1))
-        self.btn_init_wipe.bind(on_press=self.show_wipe_confirm)
-        
-        self.wipe_input = TextInput(hint_text="Type 'clear'", multiline=False, opacity=0, disabled=True, font_size='18sp')
-        self.btn_confirm_wipe = Button(text="CONFIRM WIPE", background_color=(1, 0, 0, 1), opacity=0, disabled=True)
-        self.btn_confirm_wipe.bind(on_press=self.execute_wipe)
-
-        self.wipe_layout.add_widget(self.btn_init_wipe)
-        self.wipe_layout.add_widget(self.wipe_input)
-        self.wipe_layout.add_widget(self.btn_confirm_wipe)
-        self.settings_ui.add_widget(self.wipe_layout)
-
-        self.btn_back = Button(text="BACK TO SESSION", size_hint=(1, 0.15), background_color=(0.3, 0.3, 0.3, 1))
-        self.btn_back.bind(on_press=self.close_settings)
-        self.settings_ui.add_widget(self.btn_back)
-
-        self.root.add_widget(self.main_ui)
-        Window.bind(on_key_down=self._on_keyboard_down)
-
-        # ================= BOOTUP =================
-        if platform == 'android':
-            self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
-        else:
-            self.app_dir = os.path.dirname(os.path.abspath(__file__))
+        # We wrap the ENTIRE boot process in a try/except to catch launch crashes!
+        try:
+            self.state = "IDLE" 
+            self.queue = []
+            self.history = []
+            self.current_card = None
+            self.db = {}
+            self.config = {}
+            self.run_mode_active = False
+            self.in_settings = False
+            self.waiting_for_key = None
             
-        self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
-        self.db_path = os.path.join(self.app_dir, 'progress.json')
-        self.config_path = os.path.join(self.app_dir, 'config.json')
+            self.active_sound = None
+            self.preloaded_sound = None
+            self.preloaded_path = ""
+            self.media_session = None
+            self.wake_lock = None
+            
+            self.play_mode_A_to_B = True
 
-        self.load_config()
+            Window.allow_screensaver = False
+            Window.clearcolor = (0.1, 0.1, 0.1, 1)
 
-        if platform == 'android':
-            self.request_storage_access()
-        else:
-            self.start_background_load()
+            self.root = BoxLayout(orientation='vertical')
 
-        return self.root
+            # ================= MAIN UI =================
+            self.main_ui = BoxLayout(orientation='vertical', padding=20, spacing=20)
+            
+            self.label = Label(text="Initializing...", font_size='32sp', halign="center", valign="middle", markup=True, size_hint=(1, 0.55))
+            self.label.bind(size=self.label.setter('text_size'))
+            self.main_ui.add_widget(self.label)
+
+            self.btn_run_mode = Button(text="ENTER RUN MODE\n(Black Screen)", font_size='20sp', background_color=(0.3, 0.3, 0.3, 1), size_hint=(1, 0.2))
+            self.btn_run_mode.bind(on_press=self.toggle_run_mode)
+            self.main_ui.add_widget(self.btn_run_mode)
+
+            self.btn_settings = Button(text="SETTINGS & STATS", font_size='20sp', background_color=(0.2, 0.4, 0.6, 1), size_hint=(1, 0.15))
+            self.btn_settings.bind(on_press=self.open_settings)
+            self.main_ui.add_widget(self.btn_settings)
+
+            self.debug_label = Label(text="System Ready", font_size='14sp', size_hint=(1, 0.1), color=(0.5, 0.5, 0.5, 1))
+            self.main_ui.add_widget(self.debug_label)
+
+            # ================= SETTINGS UI =================
+            self.settings_ui = BoxLayout(orientation='vertical', padding=20, spacing=15)
+            
+            self.stats_label = Label(text="Loading stats...", font_size='16sp', halign="center", valign="middle", size_hint=(1, 0.25), markup=True)
+            self.stats_label.bind(size=self.stats_label.setter('text_size'))
+            self.settings_ui.add_widget(self.stats_label)
+
+            self.toggles_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
+            
+            self.btn_toggle_mode = Button(text="MODE: Front -> Back", font_size='16sp', background_color=(0.5, 0.3, 0.8, 1))
+            self.btn_toggle_mode.bind(on_press=self.toggle_play_mode)
+            self.toggles_layout.add_widget(self.btn_toggle_mode)
+
+            self.btn_toggle_media = Button(text="MEDIA MODE: OFF", font_size='16sp', background_color=(0.8, 0.4, 0.2, 1))
+            self.btn_toggle_media.bind(on_press=self.toggle_media_mode)
+            self.toggles_layout.add_widget(self.btn_toggle_media)
+            
+            self.settings_ui.add_widget(self.toggles_layout)
+
+            self.binds_layout = BoxLayout(orientation='horizontal', spacing=5, size_hint=(1, 0.15))
+            self.btn_bind_next = Button(text="Map NEXT", background_color=(0.3, 0.3, 0.3, 1))
+            self.btn_bind_next.bind(on_press=lambda x: self.start_binding("next", self.btn_bind_next))
+            
+            self.btn_bind_known = Button(text="Map KNOWN", background_color=(0.3, 0.3, 0.3, 1))
+            self.btn_bind_known.bind(on_press=lambda x: self.start_binding("known", self.btn_bind_known))
+            
+            self.btn_bind_rewind = Button(text="Map REWIND", background_color=(0.3, 0.3, 0.3, 1))
+            self.btn_bind_rewind.bind(on_press=lambda x: self.start_binding("rewind", self.btn_bind_rewind))
+            
+            self.btn_bind_reset = Button(text="RESET\nBINDS", background_color=(0.6, 0.2, 0.2, 1), size_hint=(0.5, 1))
+            self.btn_bind_reset.bind(on_press=self.reset_binds)
+
+            self.binds_layout.add_widget(self.btn_bind_next)
+            self.binds_layout.add_widget(self.btn_bind_known)
+            self.binds_layout.add_widget(self.btn_bind_rewind)
+            self.binds_layout.add_widget(self.btn_bind_reset)
+            self.settings_ui.add_widget(self.binds_layout)
+
+            self.backup_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
+            self.btn_export = Button(text="EXPORT BACKUP", background_color=(0.2, 0.6, 0.2, 1))
+            self.btn_export.bind(on_press=self.show_export_menu)
+            self.btn_import = Button(text="IMPORT BACKUP", background_color=(0.6, 0.4, 0.2, 1))
+            self.btn_import.bind(on_press=self.show_import_menu)
+            self.backup_layout.add_widget(self.btn_export)
+            self.backup_layout.add_widget(self.btn_import)
+            self.settings_ui.add_widget(self.backup_layout)
+
+            self.wipe_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
+            self.btn_init_wipe = Button(text="WIPE PROGRESS", background_color=(0.8, 0, 0, 1))
+            self.btn_init_wipe.bind(on_press=self.show_wipe_confirm)
+            
+            self.wipe_input = TextInput(hint_text="Type 'clear'", multiline=False, opacity=0, disabled=True, font_size='18sp')
+            self.btn_confirm_wipe = Button(text="CONFIRM WIPE", background_color=(1, 0, 0, 1), opacity=0, disabled=True)
+            self.btn_confirm_wipe.bind(on_press=self.execute_wipe)
+
+            self.wipe_layout.add_widget(self.btn_init_wipe)
+            self.wipe_layout.add_widget(self.wipe_input)
+            self.wipe_layout.add_widget(self.btn_confirm_wipe)
+            self.settings_ui.add_widget(self.wipe_layout)
+
+            self.btn_back = Button(text="BACK TO SESSION", size_hint=(1, 0.15), background_color=(0.3, 0.3, 0.3, 1))
+            self.btn_back.bind(on_press=self.close_settings)
+            self.settings_ui.add_widget(self.btn_back)
+
+            self.root.add_widget(self.main_ui)
+            Window.bind(on_key_down=self._on_keyboard_down)
+
+            # ================= BOOTUP =================
+            if platform == 'android':
+                self.app_dir = os.path.join("/storage/emulated/0", EXTERNAL_FOLDER_NAME)
+            else:
+                self.app_dir = os.path.dirname(os.path.abspath(__file__))
+                
+            self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
+            self.db_path = os.path.join(self.app_dir, 'progress.json')
+            self.config_path = os.path.join(self.app_dir, 'config.json')
+
+            # FORCE CREATE DIRECTORIES SO WE DON'T CRASH
+            os.makedirs(self.app_dir, exist_ok=True)
+            os.makedirs(self.audio_dir, exist_ok=True)
+
+            self.load_config()
+
+            if platform == 'android':
+                self.request_storage_access()
+            else:
+                self.start_background_load()
+
+            return self.root
+
+        except Exception as e:
+            # IF IT CRASHES, PRINT IT TO THE SCREEN IN RED
+            err = traceback.format_exc()
+            write_crash_log(err)
+            err_label = Label(text=f"FATAL BOOT CRASH:\n\n{err}", color=(1,0,0,1), text_size=(Window.width-40, None), halign="left", valign="top")
+            err_label.bind(size=err_label.setter('text_size'))
+            return err_label
 
     # ================= CONFIG & BACKGROUND LOGIC =================
     def on_start(self):
-        """Runs right after app boots up to restore background session if enabled"""
-        if self.config.get("media_mode", False):
-            self.setup_media_session()
+        try:
+            if getattr(self, 'config', {}).get("media_mode", False):
+                self.setup_media_session()
+        except: pass
 
     def on_pause(self):
         return True
@@ -177,11 +200,9 @@ class DriveLearnApp(App):
         else:
             self.config = {"media_mode": False, "binds": {"next": [], "known": [], "rewind": []}}
             
-        # Ensure dict keys exist to prevent crashes
         if "binds" not in self.config:
             self.config["binds"] = {"next": [], "known": [], "rewind": []}
 
-        # Update visual toggle button
         if self.config.get("media_mode", False):
             self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
             self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
@@ -224,8 +245,8 @@ class DriveLearnApp(App):
                 self.media_session.setFlags(3)
                 
             state_builder = PlaybackStateBuilder()
-            state_builder.setActions(512 | 32 | 16) # Play/Pause, Next, Prev
-            state_builder.setState(3, 0, 1.0) # PLAYING State
+            state_builder.setActions(512 | 32 | 16) 
+            state_builder.setState(3, 0, 1.0) 
             self.media_session.setPlaybackState(state_builder.build())
             self.media_session.setActive(True)
             
@@ -322,21 +343,69 @@ class DriveLearnApp(App):
             self.label.text = f"Queue: {len(self.queue)} Cards\n\n[Press Remote to Resume]"
             self.state = "IDLE"
 
-    # ================= IMPORT & EXPORT =================
-    def export_data(self, instance):
-        backup_path = os.path.join(self.app_dir, 'progress_backup.json')
+    # ================= FILE BROWSER MENUS =================
+    def show_import_menu(self, instance):
+        content = BoxLayout(orientation='vertical')
+        filechooser = FileChooserListView(path='/storage/emulated/0', filters=['*.json'])
+        btn_layout = BoxLayout(size_hint_y=0.2)
+        
+        btn_cancel = Button(text="Cancel", background_color=(0.5, 0.5, 0.5, 1))
+        btn_load = Button(text="Load File", background_color=(0.2, 0.6, 0.2, 1))
+        
+        btn_layout.add_widget(btn_cancel)
+        btn_layout.add_widget(btn_load)
+        content.add_widget(filechooser)
+        content.add_widget(btn_layout)
+
+        popup = Popup(title="Select Progress File to Import", content=content, size_hint=(0.95, 0.95))
+        btn_cancel.bind(on_release=popup.dismiss)
+        
+        def _load(*args):
+            if filechooser.selection:
+                self.execute_import(filechooser.selection[0])
+            popup.dismiss()
+            
+        btn_load.bind(on_release=_load)
+        popup.open()
+
+    def show_export_menu(self, instance):
+        content = BoxLayout(orientation='vertical')
+        filechooser = FileChooserListView(path='/storage/emulated/0', dirselect=True)
+        btn_layout = BoxLayout(size_hint_y=0.2)
+        
+        btn_cancel = Button(text="Cancel", background_color=(0.5, 0.5, 0.5, 1))
+        btn_save = Button(text="Save Here", background_color=(0.2, 0.6, 0.2, 1))
+        
+        btn_layout.add_widget(btn_cancel)
+        btn_layout.add_widget(btn_save)
+        content.add_widget(filechooser)
+        content.add_widget(btn_layout)
+
+        popup = Popup(title="Select Folder to Export Backup", content=content, size_hint=(0.95, 0.95))
+        btn_cancel.bind(on_release=popup.dismiss)
+        
+        def _save(*args):
+            target_path = filechooser.path
+            if filechooser.selection and os.path.isdir(filechooser.selection[0]):
+                target_path = filechooser.selection[0]
+            self.execute_export(os.path.join(target_path, 'progress_backup.json'))
+            popup.dismiss()
+            
+        btn_save.bind(on_release=_save)
+        popup.open()
+
+    def execute_export(self, target_path):
         try:
-            with open(backup_path, 'w') as f:
+            with open(target_path, 'w') as f:
                 json.dump(self.db, f)
-            self.stats_label.text = f"[color=00ff00]BACKUP SAVED TO FOLDER![/color]\n\n" + self.stats_label.text
+            self.stats_label.text = f"[color=00ff00]Saved successfully to:\n{target_path}[/color]\n\n" + self.stats_label.text
         except Exception as e:
             self.stats_label.text = f"[color=ff0000]Export Failed: {e}[/color]\n\n" + self.stats_label.text
 
-    def import_data(self, instance):
-        backup_path = os.path.join(self.app_dir, 'progress_backup.json')
-        if os.path.exists(backup_path):
+    def execute_import(self, source_path):
+        if os.path.exists(source_path):
             try:
-                with open(backup_path, 'r') as f:
+                with open(source_path, 'r') as f:
                     self.db = json.load(f)
                 self.save_db()
                 self.queue = []
@@ -344,12 +413,11 @@ class DriveLearnApp(App):
                 self.state = "IDLE"
                 Clock.schedule_once(self.build_session_queue, 0)
                 self.load_stats()
-                self.stats_label.text = f"[color=00ff00]BACKUP RESTORED SUCCESSFULLY![/color]\n\n" + self.stats_label.text
+                self.stats_label.text = f"[color=00ff00]Restored successfully from:\n{source_path}[/color]\n\n" + self.stats_label.text
             except Exception as e:
                 self.stats_label.text = f"[color=ff0000]Import Failed: {e}[/color]\n\n" + self.stats_label.text
-        else:
-            self.stats_label.text = f"[color=ffff00]No 'progress_backup.json' found in folder![/color]\n\n" + self.stats_label.text
 
+    # ================= WIPE LOGIC =================
     def show_wipe_confirm(self, instance):
         self.btn_init_wipe.text = "Type 'clear' ->"
         self.btn_init_wipe.disabled = True
@@ -687,7 +755,6 @@ class DriveLearnApp(App):
         key_id = keycode[0] if isinstance(keycode, tuple) else keycode
         self.update_debug(f"Last Key: {key_id}")
 
-        # If we are mapping a new key
         if self.waiting_for_key:
             action = self.waiting_for_key
             if key_id not in self.config["binds"][action]:
@@ -703,7 +770,6 @@ class DriveLearnApp(App):
 
         if self.in_settings: return False
 
-        # Merge defaults with any custom binds
         next_keys = [273, 275, 24, 32, 13, 85, 266] + self.config["binds"].get("next", [])
         known_keys = [276, 25, 87, 269] + self.config["binds"].get("known", [])
         rewind_keys = [274, 88, 268] + self.config["binds"].get("rewind", [])
@@ -726,4 +792,7 @@ class DriveLearnApp(App):
         return False
 
 if __name__ == '__main__':
-    DriveLearnApp().run()
+    try:
+        DriveLearnApp().run()
+    except Exception as e:
+        write_crash_log(traceback.format_exc())
