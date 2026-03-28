@@ -30,13 +30,17 @@ class DriveLearnApp(App):
         self.history = []
         self.current_card = None
         self.db = {}
+        self.config = {}
         self.run_mode_active = False
         self.in_settings = False
+        self.waiting_for_key = None
         
-        # Audio Preloader Engine
+        # Audio & Media Engines
         self.active_sound = None
         self.preloaded_sound = None
         self.preloaded_path = ""
+        self.media_session = None
+        self.wake_lock = None
         
         # Mode Management: True = A->B, False = B->A
         self.play_mode_A_to_B = True
@@ -67,13 +71,42 @@ class DriveLearnApp(App):
         # ================= SETTINGS UI =================
         self.settings_ui = BoxLayout(orientation='vertical', padding=20, spacing=15)
         
-        self.stats_label = Label(text="Loading stats...", font_size='18sp', halign="center", valign="middle", size_hint=(1, 0.4), markup=True)
+        self.stats_label = Label(text="Loading stats...", font_size='16sp', halign="center", valign="middle", size_hint=(1, 0.25), markup=True)
         self.stats_label.bind(size=self.stats_label.setter('text_size'))
         self.settings_ui.add_widget(self.stats_label)
 
-        self.btn_toggle_mode = Button(text="MODE: Front -> Back\n(Tap to swap)", font_size='18sp', background_color=(0.5, 0.3, 0.8, 1), size_hint=(1, 0.15))
+        # Toggles Row
+        self.toggles_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
+        
+        self.btn_toggle_mode = Button(text="MODE: Front -> Back", font_size='16sp', background_color=(0.5, 0.3, 0.8, 1))
         self.btn_toggle_mode.bind(on_press=self.toggle_play_mode)
-        self.settings_ui.add_widget(self.btn_toggle_mode)
+        self.toggles_layout.add_widget(self.btn_toggle_mode)
+
+        self.btn_toggle_media = Button(text="MEDIA MODE: OFF", font_size='16sp', background_color=(0.8, 0.4, 0.2, 1))
+        self.btn_toggle_media.bind(on_press=self.toggle_media_mode)
+        self.toggles_layout.add_widget(self.btn_toggle_media)
+        
+        self.settings_ui.add_widget(self.toggles_layout)
+
+        # Keybinds Row
+        self.binds_layout = BoxLayout(orientation='horizontal', spacing=5, size_hint=(1, 0.15))
+        self.btn_bind_next = Button(text="Map NEXT", background_color=(0.3, 0.3, 0.3, 1))
+        self.btn_bind_next.bind(on_press=lambda x: self.start_binding("next", self.btn_bind_next))
+        
+        self.btn_bind_known = Button(text="Map KNOWN", background_color=(0.3, 0.3, 0.3, 1))
+        self.btn_bind_known.bind(on_press=lambda x: self.start_binding("known", self.btn_bind_known))
+        
+        self.btn_bind_rewind = Button(text="Map REWIND", background_color=(0.3, 0.3, 0.3, 1))
+        self.btn_bind_rewind.bind(on_press=lambda x: self.start_binding("rewind", self.btn_bind_rewind))
+        
+        self.btn_bind_reset = Button(text="RESET\nBINDS", background_color=(0.6, 0.2, 0.2, 1), size_hint=(0.5, 1))
+        self.btn_bind_reset.bind(on_press=self.reset_binds)
+
+        self.binds_layout.add_widget(self.btn_bind_next)
+        self.binds_layout.add_widget(self.btn_bind_known)
+        self.binds_layout.add_widget(self.btn_bind_rewind)
+        self.binds_layout.add_widget(self.btn_bind_reset)
+        self.settings_ui.add_widget(self.binds_layout)
 
         # Import / Export Row
         self.backup_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint=(1, 0.15))
@@ -114,6 +147,9 @@ class DriveLearnApp(App):
             
         self.audio_dir = os.path.join(self.app_dir, AUDIO_SUBFOLDER)
         self.db_path = os.path.join(self.app_dir, 'progress.json')
+        self.config_path = os.path.join(self.app_dir, 'config.json')
+
+        self.load_config()
 
         if platform == 'android':
             self.request_storage_access()
@@ -122,9 +158,119 @@ class DriveLearnApp(App):
 
         return self.root
 
+    # ================= CONFIG & BACKGROUND LOGIC =================
+    def on_start(self):
+        """Runs right after app boots up to restore background session if enabled"""
+        if self.config.get("media_mode", False):
+            self.setup_media_session()
+
+    def on_pause(self):
+        return True
+
+    def load_config(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r') as f:
+                    self.config = json.load(f)
+            except:
+                self.config = {"media_mode": False, "binds": {"next": [], "known": [], "rewind": []}}
+        else:
+            self.config = {"media_mode": False, "binds": {"next": [], "known": [], "rewind": []}}
+            
+        # Ensure dict keys exist to prevent crashes
+        if "binds" not in self.config:
+            self.config["binds"] = {"next": [], "known": [], "rewind": []}
+
+        # Update visual toggle button
+        if self.config.get("media_mode", False):
+            self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
+            self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
+        else:
+            self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
+            self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
+
+    def save_config(self):
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(self.config, f)
+        except Exception as e:
+            self.update_debug(f"Config Save Error: {e}")
+
+    def toggle_media_mode(self, instance=None):
+        current_state = self.config.get("media_mode", False)
+        self.config["media_mode"] = not current_state
+        self.save_config()
+        
+        if self.config["media_mode"]:
+            self.setup_media_session()
+        else:
+            self.disable_media_session()
+
+    def setup_media_session(self):
+        if platform != 'android': return
+        try:
+            from jnius import autoclass
+            Context = autoclass('android.content.Context')
+            AudioManager = autoclass('android.media.AudioManager')
+            MediaSession = autoclass('android.media.session.MediaSession')
+            PlaybackStateBuilder = autoclass('android.media.session.PlaybackState$Builder')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+            audio_manager = PythonActivity.mActivity.getSystemService(Context.AUDIO_SERVICE)
+            audio_manager.requestAudioFocus(None, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+
+            if not self.media_session:
+                self.media_session = MediaSession(PythonActivity.mActivity, "DriveLearn")
+                self.media_session.setFlags(3)
+                
+            state_builder = PlaybackStateBuilder()
+            state_builder.setActions(512 | 32 | 16) # Play/Pause, Next, Prev
+            state_builder.setState(3, 0, 1.0) # PLAYING State
+            self.media_session.setPlaybackState(state_builder.build())
+            self.media_session.setActive(True)
+            
+            power_manager = PythonActivity.mActivity.getSystemService(Context.POWER_SERVICE)
+            if not self.wake_lock:
+                self.wake_lock = power_manager.newWakeLock(1, "DriveLearn:KeepAlive")
+                self.wake_lock.acquire()
+                
+            self.update_debug("Background Media Mode ON")
+            self.btn_toggle_media.text = "MEDIA MODE: ON\n(Tap to disable)"
+            self.btn_toggle_media.background_color = (0.2, 0.8, 0.2, 1)
+        except Exception as e:
+            self.update_debug(f"Media Setup Error: {e}")
+
+    def disable_media_session(self):
+        if platform != 'android': return
+        try:
+            if self.media_session:
+                self.media_session.setActive(False)
+            if self.wake_lock:
+                try: self.wake_lock.release()
+                except: pass
+                self.wake_lock = None
+                
+            self.update_debug("Background Media Mode OFF")
+            self.btn_toggle_media.text = "MEDIA MODE: OFF\n(Tap to enable)"
+            self.btn_toggle_media.background_color = (0.8, 0.4, 0.2, 1)
+        except Exception as e:
+            pass
+
+    # ================= KEY BINDING LOGIC =================
+    def start_binding(self, action, button_widget):
+        self.waiting_for_key = action
+        self.btn_bind_next.text = "Map NEXT"
+        self.btn_bind_known.text = "Map KNOWN"
+        self.btn_bind_rewind.text = "Map REWIND"
+        button_widget.text = "Press a key..."
+
+    def reset_binds(self, instance):
+        self.config["binds"] = {"next": [], "known": [], "rewind": []}
+        self.save_config()
+        self.stats_label.text = "[color=ffff00]Custom Keybinds Reset to Default![/color]\n\n" + self.stats_label.text
+
     # ================= UNIFIED DB HELPER =================
     def get_mode_data(self, card_id):
-        """Returns the specific tracking stats based on the current mode"""
         data = self.db[card_id]
         return data['a_to_b'] if self.play_mode_A_to_B else data['b_to_a']
 
@@ -165,6 +311,11 @@ class DriveLearnApp(App):
 
     def close_settings(self, instance):
         self.in_settings = False
+        self.waiting_for_key = None
+        self.btn_bind_next.text = "Map NEXT"
+        self.btn_bind_known.text = "Map KNOWN"
+        self.btn_bind_rewind.text = "Map REWIND"
+        
         self.root.clear_widgets()
         self.root.add_widget(self.main_ui)
         if self.queue:
@@ -209,7 +360,6 @@ class DriveLearnApp(App):
 
     def execute_wipe(self, instance):
         if self.wipe_input.text.strip().lower() == 'clear':
-            # Wipe ONLY the current mode's progress
             for word_id, data in self.db.items():
                 if self.play_mode_A_to_B:
                     data['a_to_b'] = {"box": 0, "due": 0}
@@ -274,7 +424,7 @@ class DriveLearnApp(App):
                 intent.setData(uri)
                 PythonActivity.mActivity.startActivity(intent)
                 
-                self.label.text = "[color=ffff00]ACTION REQUIRED:[/color]\n\nPlease toggle 'Allow' in the settings menu that just opened.\n\n[b]Then restart this app.[/b]"
+                self.label.text = "[color=ffff00]ACTION REQUIRED:[/color]\n\nPlease toggle 'Allow'.\n\n[b]Then restart this app.[/b]"
                 return
                 
         from android.permissions import request_permissions, Permission
@@ -304,13 +454,10 @@ class DriveLearnApp(App):
 
     def load_data(self):
         try:
-            # 1. Load existing database
             if os.path.exists(self.db_path):
                 try:
                     with open(self.db_path, 'r') as f:
                         self.db = json.load(f)
-                        
-                    # MIGRATION CHECK: Convert old DBs to new Unified format silently
                     for k, v in list(self.db.items()):
                         if 'box' in v:
                             self.db[k] = {
@@ -324,7 +471,6 @@ class DriveLearnApp(App):
                     self.db = {}
             else: self.db = {}
 
-            # 2. Scan audio folder for new files
             if os.path.exists(self.audio_dir):
                 all_files = os.listdir(self.audio_dir)
                 a_files = sorted([f for f in all_files if "_A_" in f and f.endswith(('.mp3', '.wav', '.ogg'))])
@@ -396,13 +542,11 @@ class DriveLearnApp(App):
         else:
             self.label.text = "Session Complete!"
 
-    # ================= ZERO-LAG AUDIO ENGINE =================
     def play_audio(self, filepath):
         if self.active_sound:
             try: self.active_sound.stop()
             except: pass
             
-        # If it was preloaded, play it instantly!
         if filepath == self.preloaded_path and self.preloaded_sound:
             self.active_sound = self.preloaded_sound
         else:
@@ -413,7 +557,6 @@ class DriveLearnApp(App):
             self.active_sound.play()
 
     def preload_audio(self, filepath):
-        """Silently loads the next track into memory while you listen"""
         if os.path.exists(filepath):
             self.preloaded_sound = SoundLoader.load(filepath)
             self.preloaded_path = filepath
@@ -425,8 +568,7 @@ class DriveLearnApp(App):
         return name
 
     def refill_queue(self):
-        if len(self.queue) >= SESSION_LIMIT:
-            return
+        if len(self.queue) >= SESSION_LIMIT: return
 
         now = time.time()
         active_ids = set(self.queue)
@@ -467,7 +609,7 @@ class DriveLearnApp(App):
             self.label.color = (1, 1, 1, 1)
             
             self.play_audio(q_file)
-            self.preload_audio(a_file) # Preload the answer!
+            self.preload_audio(a_file)
 
         elif self.state == "PLAYING_Q":
             self.state = "PLAYING_A"
@@ -479,7 +621,6 @@ class DriveLearnApp(App):
             
             self.play_audio(a_file)
             
-            # Preload the NEXT question in the queue!
             if self.queue:
                 next_card_data = self.db[self.queue[0]]
                 next_q_file, _ = self.get_current_play_files(next_card_data)
@@ -531,7 +672,7 @@ class DriveLearnApp(App):
         
         wait_days = INTERVALS[mode_data['box']]
         if not success:
-            mode_data['due'] = time.time()  # Instant database reset, no 300s lock
+            mode_data['due'] = time.time() 
             self.queue.append(self.current_card) 
         else:
             mode_data['due'] = time.time() + (wait_days * 86400)
@@ -543,19 +684,37 @@ class DriveLearnApp(App):
         self.next_step()
 
     def _on_keyboard_down(self, window, keycode, scancode, text, modifiers):
+        key_id = keycode[0] if isinstance(keycode, tuple) else keycode
+        self.update_debug(f"Last Key: {key_id}")
+
+        # If we are mapping a new key
+        if self.waiting_for_key:
+            action = self.waiting_for_key
+            if key_id not in self.config["binds"][action]:
+                self.config["binds"][action].append(key_id)
+                self.save_config()
+            
+            self.waiting_for_key = None
+            self.btn_bind_next.text = "Map NEXT"
+            self.btn_bind_known.text = "Map KNOWN"
+            self.btn_bind_rewind.text = "Map REWIND"
+            self.stats_label.text = f"[color=00ff00]Mapped Key {key_id} to {action.upper()}![/color]\n\n" + self.stats_label.text
+            return True
+
         if self.in_settings: return False
 
-        key_id = keycode[0] if isinstance(keycode, tuple) else keycode
-        
-        if key_id in [276, 25]: 
+        # Merge defaults with any custom binds
+        next_keys = [273, 275, 24, 32, 13, 85, 266] + self.config["binds"].get("next", [])
+        known_keys = [276, 25, 87, 269] + self.config["binds"].get("known", [])
+        rewind_keys = [274, 88, 268] + self.config["binds"].get("rewind", [])
+
+        if key_id in known_keys:
             self.mark_as_known()
             return True
-
-        elif key_id in [273, 275, 24, 32, 13]: 
+        elif key_id in next_keys:
             self.next_step()
             return True
-
-        elif key_id == 274:
+        elif key_id in rewind_keys:
             self.rewind_action()
             return True
             
