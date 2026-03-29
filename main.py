@@ -59,6 +59,7 @@ class DriveLearnApp(App):
             self.active_sound = None
             self.preloaded_sound = None
             self.preloaded_path = ""
+            self.media_session = None
             self.wake_lock = None
             
             self.play_mode_A_to_B = True
@@ -241,24 +242,38 @@ class DriveLearnApp(App):
             from jnius import autoclass
             Context = autoclass('android.content.Context')
             AudioManager = autoclass('android.media.AudioManager')
+            MediaSession = autoclass('android.media.session.MediaSession')
+            PlaybackStateBuilder = autoclass('android.media.session.PlaybackState$Builder')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
             # 1. Violently steal Audio Focus so the car stops talking to Spotify
             audio_manager = PythonActivity.mActivity.getSystemService(Context.AUDIO_SERVICE)
             audio_manager.requestAudioFocus(None, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
 
-            # 2. Grab a Wake Lock so the CPU keeps accepting Bluetooth commands in the dark
+            # 2. Build the ACTUAL Media Session so Android and your Car see it
+            if not getattr(self, 'media_session', None):
+                self.media_session = MediaSession(PythonActivity.mActivity, "DriveLearn")
+                self.media_session.setFlags(3) # FLAG_HANDLES_MEDIA_BUTTONS
+                
+            state_builder = PlaybackStateBuilder()
+            # Register Play, Pause, Next, and Previous actions
+            state_builder.setActions(512 | 16 | 4 | 2) 
+            state_builder.setState(3, 0, 1.0) # 3 = STATE_PLAYING
+            self.media_session.setPlaybackState(state_builder.build())
+            self.media_session.setActive(True)
+
+            # 3. Grab a Wake Lock so the CPU keeps accepting Bluetooth commands
             power_manager = PythonActivity.mActivity.getSystemService(Context.POWER_SERVICE)
-            if not self.wake_lock:
+            if not getattr(self, 'wake_lock', None):
                 self.wake_lock = power_manager.newWakeLock(1, "DriveLearn:KeepAlive")
                 self.wake_lock.acquire()
                 
-            self.update_debug("Audio Focus & WakeLock ON")
+            self.update_debug("Media Session & WakeLock ON")
             
         except Exception as e:
             err = traceback.format_exc()
-            write_crash_log(f"AUDIO FOCUS SETUP FAILED:\n{err}")
-            self.update_debug("Audio Setup Failed! Check Crash Log.")
+            write_crash_log(f"MEDIA SESSION SETUP FAILED:\n{err}")
+            self.update_debug("Media Setup Failed! Check Crash Log.")
 
     def disable_media_session(self):
         if platform != 'android': return
@@ -272,15 +287,19 @@ class DriveLearnApp(App):
             audio_manager = PythonActivity.mActivity.getSystemService(Context.AUDIO_SERVICE)
             audio_manager.abandonAudioFocus(None)
 
+            # Destroy Media Session
+            if getattr(self, 'media_session', None):
+                self.media_session.setActive(False)
+
             # Release Wake Lock
-            if self.wake_lock:
+            if getattr(self, 'wake_lock', None):
                 try: self.wake_lock.release()
                 except: pass
                 self.wake_lock = None
                 
-            self.update_debug("Audio Focus & WakeLock OFF")
+            self.update_debug("Media Session & WakeLock OFF")
         except Exception as e:
-            write_crash_log(f"AUDIO FOCUS DISABLE FAILED:\n{traceback.format_exc()}")
+            write_crash_log(f"MEDIA SESSION DISABLE FAILED:\n{traceback.format_exc()}")
 
     # ================= KEY BINDING LOGIC =================
     def start_binding(self, action, button_widget):
